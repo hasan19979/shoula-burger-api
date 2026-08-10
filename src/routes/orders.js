@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireStaffAuth = require('../middleware/staffAuth');
 const { deductForOrderItems } = require('./inventory');
 
 const router = express.Router();
@@ -157,8 +158,8 @@ router.post('/', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة). بيخصم المخزون تلقائياً حسب الوصفات
-router.post('/pos', requireAuth, asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, notes, couponCode, paymentMethod, tableNumber, cashierName, kitchenStatus } = req.body || {};
+router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { items, customerName, customerPhone, notes, couponCode, paymentMethod, tableNumber, kitchenStatus } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -183,7 +184,7 @@ router.post('/pos', requireAuth, asyncHandler(async (req, res) => {
       paymentMethod: paymentMethod || 'cash',
       chargeDeliveryFee: false,
       tableNumber: tableNumber || null,
-      cashierName: cashierName || null,
+      cashierName: req.staff?.name || null,
       orderSource: 'pos',
       kitchenStatus: kitchenStatus || 'served'
     });
@@ -202,7 +203,7 @@ router.post('/pos', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PATCH /api/orders/:id/kitchen-status — محمي: تحديث حالة التحضير بالمطبخ
-router.patch('/:id/kitchen-status', requireAuth, asyncHandler(async (req, res) => {
+router.patch('/:id/kitchen-status', requireStaffAuth, asyncHandler(async (req, res) => {
   const { kitchenStatus } = req.body || {};
   const valid = ['new', 'preparing', 'ready', 'served'];
   if (!valid.includes(kitchenStatus)) return res.status(400).json({ error: 'حالة غير معروفة' });

@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireStaffAuth = require('../middleware/staffAuth');
 
 const router = express.Router();
 
@@ -23,19 +24,19 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PATCH /api/tables/:id/open — محمي
-router.patch('/:id/open', requireAuth, asyncHandler(async (req, res) => {
-  const { partySize, cashierName } = req.body || {};
+router.patch('/:id/open', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { partySize } = req.body || {};
   const result = await pool.query(
     `UPDATE restaurant_tables SET status = 'occupied', party_size = $1, opened_at = now(), cashier_name = $2
      WHERE id = $3 RETURNING *`,
-    [partySize || null, cashierName || '', req.params.id]
+    [partySize || null, req.staff?.name || '', req.params.id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'الطاولة مش موجودة' });
   res.json(result.rows[0]);
 }));
 
 // PATCH /api/tables/:id/status — محمي: تحديث الحالة (needs-cleaning / available / reserved)
-router.patch('/:id/status', requireAuth, asyncHandler(async (req, res) => {
+router.patch('/:id/status', requireStaffAuth, asyncHandler(async (req, res) => {
   const { status } = req.body || {};
   const valid = ['available', 'occupied', 'reserved', 'needs-cleaning'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'حالة غير معروفة' });
@@ -52,7 +53,7 @@ router.patch('/:id/status', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // POST /api/tables/:id/transfer — محمي: نقل جلسة لطاولة تانية فارغة
-router.post('/:id/transfer', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/transfer', requireStaffAuth, asyncHandler(async (req, res) => {
   const { toTableId } = req.body || {};
   const client = await pool.connect();
   try {

@@ -1,12 +1,13 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
 
 const router = express.Router();
 
-// POST /api/staff/login — عام: تسجيل دخول موظف الكاشير برمز PIN (4 أرقام)
+// POST /api/staff/login — عام: تسجيل دخول موظف الكاشير برمز PIN (4 أرقام)، بيرجع رمز دخول (JWT) قصير الأمد
 router.post('/login', asyncHandler(async (req, res) => {
   const { pin } = req.body || {};
   if (!pin) return res.status(400).json({ error: 'الرمز السري مطلوب' });
@@ -14,7 +15,12 @@ router.post('/login', asyncHandler(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM staff_users WHERE active = true');
   for (const staff of rows) {
     if (await bcrypt.compare(String(pin), staff.pin_hash)) {
-      return res.json({ id: staff.id, name: staff.name, role: staff.role });
+      const token = jwt.sign(
+        { staffId: staff.id, role: staff.role, name: staff.name },
+        process.env.JWT_SECRET,
+        { expiresIn: '12h' } // شفت عمل عادي — مو 7 أيام زي حساب المالك، بأمان أكتر لجهاز كاشير مشترك
+      );
+      return res.json({ token, staff: { id: staff.id, name: staff.name, role: staff.role } });
     }
   }
   res.status(401).json({ error: 'رمز غير صحيح' });

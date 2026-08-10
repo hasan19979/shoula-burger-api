@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireStaffAuth = require('../middleware/staffAuth');
 
 const router = express.Router();
 
@@ -43,7 +44,7 @@ router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // POST /api/inventory/:id/adjust — محمي: شراء/هدر/تعديل يدوي (بيسجل حركة ويحدّث الكمية بمعاملة واحدة)
-router.post('/:id/adjust', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/adjust', requireStaffAuth, asyncHandler(async (req, res) => {
   const { delta, type, note } = req.body || {};
   if (!delta || !type) return res.status(400).json({ error: 'الكمية ونوع الحركة مطلوبين' });
 
