@@ -11,6 +11,11 @@ const productsRoutes = require('./routes/products');
 const ordersRoutes = require('./routes/orders');
 const couponsRoutes = require('./routes/coupons');
 const bannersRoutes = require('./routes/banners');
+const shiftsRoutes = require('./routes/shifts');
+const staffRoutes = require('./routes/staff');
+const modifiersRoutes = require('./routes/modifiers');
+const inventoryRoutes = require('./routes/inventory');
+const tablesRoutes = require('./routes/tables');
 
 const app = express();
 
@@ -54,6 +59,11 @@ app.use('/api/products', productsRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/coupons', couponsRoutes);
 app.use('/api/banners', bannersRoutes);
+app.use('/api/shifts', shiftsRoutes);
+app.use('/api/staff', staffRoutes);
+app.use('/api/modifiers', modifiersRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/tables', tablesRoutes);
 
 // أي مسار مش موجود
 app.use((req, res) => {
