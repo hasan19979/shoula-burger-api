@@ -23,7 +23,7 @@ const suppliersRoutes = require('./routes/suppliers');
 const app = express();
 
 app.use(helmet());
-app.use(express.json({ limit: '1mb' })); // بيحمي من body ضخم/هجمات DoS بسيطة
+app.use(express.json({ limit: '6mb' })); // مرفوع من 1mb لاستيعاب صور المنتجات (base64) بعد ضغطها بالمتصفح
 
 // CORS: بس النطاقات المسموحة (موقع الطلب ولوحة التحكم) تقدر تتواصل مع الـ API
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
