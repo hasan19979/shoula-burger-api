@@ -18,8 +18,8 @@ router.get('/', requireAnyAuth, requireManagementLevel, asyncHandler(async (req,
   const { rows } = await pool.query(`
     SELECT
       c.id, c.name, c.phone, c.address, c.loyalty_points, c.created_at,
-      COUNT(o.id) FILTER (WHERE o.status = 'completed') AS order_count,
-      COALESCE(SUM(o.total) FILTER (WHERE o.status = 'completed'), 0) AS total_spent,
+      COUNT(o.id) FILTER (WHERE o.status != 'cancelled') AS order_count,
+      COALESCE(SUM(o.total) FILTER (WHERE o.status != 'cancelled'), 0) AS total_spent,
       MAX(o.created_at) AS last_order_at
     FROM customers c
     LEFT JOIN orders o ON o.customer_id = c.id
@@ -36,7 +36,7 @@ router.get('/:id/favorite-items', requireAnyAuth, requireManagementLevel, asyncH
     SELECT oi.product_name, SUM(oi.quantity) AS total_quantity
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
-    WHERE o.customer_id = $1 AND o.status = 'completed'
+    WHERE o.customer_id = $1 AND o.status != 'cancelled'
     GROUP BY oi.product_name
     ORDER BY total_quantity DESC
     LIMIT 3
