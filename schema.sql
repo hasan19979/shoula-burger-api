@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS customers (
   name TEXT NOT NULL,
   phone TEXT UNIQUE NOT NULL,
   address TEXT NOT NULL DEFAULT '',
+  loyalty_points INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -161,8 +162,20 @@ CREATE TABLE IF NOT EXISTS staff_users (
   role TEXT NOT NULL, -- admin | manager | cashier | kitchen | waiter
   pin_hash TEXT NOT NULL,
   active BOOLEAN NOT NULL DEFAULT true,
+  hourly_rate NUMERIC(10,2), -- أجر الساعة (اختياري) — يستخدم لحساب الأجر التقريبي من ساعات الحضور
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- حضور وانصراف
+CREATE TABLE IF NOT EXISTS time_entries (
+  id SERIAL PRIMARY KEY,
+  staff_id INT NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
+  clock_in TIMESTAMPTZ NOT NULL DEFAULT now(),
+  clock_out TIMESTAMPTZ, -- فاضي = لسا بالدوام
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_time_entries_staff ON time_entries(staff_id);
 
 -- مجموعات التعديلات (Modifiers)
 CREATE TABLE IF NOT EXISTS modifier_groups (
@@ -209,11 +222,23 @@ CREATE TABLE IF NOT EXISTS recipe_ingredients (
   PRIMARY KEY (product_id, inventory_item_id)
 );
 
+-- الموردين
+CREATE TABLE IF NOT EXISTS suppliers (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  contact_person TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS stock_movements (
   id SERIAL PRIMARY KEY,
   inventory_item_id INT NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+  supplier_id INT REFERENCES suppliers(id) ON DELETE SET NULL, -- فاضي إذا الحركة مش شراء (هدر، تعديل، خصم بيع)
   type TEXT NOT NULL, -- purchase | sale-deduction | waste | adjustment
   quantity NUMERIC(12,2) NOT NULL, -- موجب = زيادة، سالب = نقصان
+  unit_cost NUMERIC(10,4), -- تكلفة الوحدة وقت الشراء (اختياري، لتتبع تغيّر الأسعار عبر الزمن)
   note TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -239,7 +264,15 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS kitchen_status TEXT NOT NULL DEFAULT
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_source TEXT NOT NULL DEFAULT 'online'; -- online | pos
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS table_number TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS cashier_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_modifier_options_group ON modifier_options(group_id);
 CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_product ON recipe_ingredients(product_id);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_item ON stock_movements(inventory_item_id);
+
+ALTER TABLE staff_users ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(10,2);
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS loyalty_points INT NOT NULL DEFAULT 0;
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS supplier_id INT REFERENCES suppliers(id) ON DELETE SET NULL;
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4);

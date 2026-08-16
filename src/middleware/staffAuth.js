@@ -19,4 +19,17 @@ function requireStaffAuth(req, res, next) {
   }
 }
 
+/** بوّابة إضافية بعد requireStaffAuth — بتتأكد إن دور الموظف المسجّل فعلاً مسموح له بهاي العملية.
+ * مثال: requireStaffRole('admin', 'manager') بترفض أي طلب من كاشير أو نادل أو مطبخ. */
+function requireStaffRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.staff) return res.status(401).json({ error: 'مطلوب تسجيل دخول بالكاشير' });
+    if (!allowedRoles.includes(req.staff.role)) {
+      return res.status(403).json({ error: 'ما عندك صلاحية كافية لهاي العملية' });
+    }
+    next();
+  };
+}
+
 module.exports = requireStaffAuth;
+module.exports.requireStaffRole = requireStaffRole;

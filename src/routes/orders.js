@@ -3,7 +3,9 @@ const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
 const requireStaffAuth = require('../middleware/staffAuth');
+const requireAnyAuth = require('../middleware/anyAuth');
 const { deductForOrderItems } = require('./inventory');
+const { broadcast } = require('../realtime');
 
 const router = express.Router();
 
@@ -29,6 +31,18 @@ async function buildAndSaveOrder(client, opts) {
   );
   const productById = Object.fromEntries(dbProducts.map(p => [p.id, p]));
 
+  // نجيب أسعار كل خيارات التعديلات (Modifiers) المختارة بأي صنف بالطلب دفعة وحدة، من قاعدة البيانات
+  // مباشرة — نفس مبدأ عدم الثقة بأي سعر جاي من المتصفح، حتى لإضافات الـ Modifiers
+  const allModifierOptionIds = [...new Set(items.flatMap(i => i.modifierOptionIds || []))];
+  let modifierOptionsById = {};
+  if (allModifierOptionIds.length) {
+    const { rows: modOptions } = await client.query(
+      'SELECT id, name, price FROM modifier_options WHERE id = ANY($1)',
+      [allModifierOptionIds]
+    );
+    modifierOptionsById = Object.fromEntries(modOptions.map(o => [o.id, o]));
+  }
+
   let subtotal = 0;
   const preparedItems = [];
   for (const item of items) {
@@ -36,12 +50,21 @@ async function buildAndSaveOrder(client, opts) {
     if (!product) return { error: { status: 400, message: `صنف غير موجود (id: ${item.productId})` } };
     if (!product.in_stock) return { error: { status: 409, message: `الصنف "${product.name}" نفذت كميته حالياً` } };
     const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
-    const lineTotal = Number(product.price) * qty;
+
+    const selectedOptions = (item.modifierOptionIds || []).map(id => modifierOptionsById[id]).filter(Boolean);
+    const modifiersUnitPrice = selectedOptions.reduce((sum, o) => sum + Number(o.price), 0);
+    const unitPrice = Number(product.price) + modifiersUnitPrice;
+    const lineTotal = unitPrice * qty;
     subtotal += lineTotal;
+
+    // بنخزّن أسماء الإضافات المدفوعة (بسعرها) والمكونات الأساسية المتبقية سوا، لعرضها بالإيصال والمطبخ
+    const modifierLabels = selectedOptions.map(o => (Number(o.price) > 0 ? `${o.name} (+${o.price})` : o.name));
+    const includedList = item.includedIngredients?.length ? item.includedIngredients : modifierLabels;
+
     preparedItems.push({
       product_id: product.id, product_name: product.name, quantity: qty,
-      unit_price: product.price,
-      included_ingredients: JSON.stringify(item.includedIngredients || []),
+      unit_price: unitPrice,
+      included_ingredients: JSON.stringify(includedList),
       line_total: lineTotal
     });
   }
@@ -76,15 +99,34 @@ async function buildAndSaveOrder(client, opts) {
     return { error: { status: 400, message: `الحد الأدنى للطلب ${minOrder}، سلتك الحالية ${subtotal}` } };
   }
 
-  const total = subtotal - discount + deliveryFee;
-
+  // نجيب/ننشئ العميل قبل ما نحسم نقاط الولاء، حتى نتأكد من رصيده الحقيقي بقاعدة البيانات (مش من المتصفح)
   const customerRes = await client.query(
     `INSERT INTO customers (name, phone, address) VALUES ($1, $2, $3)
      ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name, address = COALESCE(NULLIF(EXCLUDED.address, ''), customers.address)
-     RETURNING id`,
+     RETURNING id, loyalty_points`,
     [customerName, customerPhone, address || '']
   );
   const customerId = customerRes.rows[0].id;
+  const currentPoints = customerRes.rows[0].loyalty_points;
+
+  // سياسة الولاء: نقطة لكل ١٠₪ مصروفة، وقيمة النقطة عند الصرف ٠.٥٠₪ — بدون حد أدنى للاستخدام
+  // ما بنطبقها إطلاقاً لو ما في رقم جوال حقيقي (زبون كاشير عابر بدون رقم) — منعاً لتجميع نقاط وهمية بحساب مشترك
+  const hasRealPhone = customerPhone && customerPhone !== '-';
+  const POINTS_PER_CURRENCY_UNIT = 1 / 10;
+  const POINT_VALUE = 0.5;
+
+  const requestedRedeem = hasRealPhone ? Math.max(0, parseInt(opts.redeemPoints, 10) || 0) : 0;
+  const redeemedPoints = Math.min(requestedRedeem, currentPoints);
+  const pointsDiscount = Math.min(redeemedPoints * POINT_VALUE, subtotal - discount);
+  discount += pointsDiscount;
+
+  const total = subtotal - discount + deliveryFee;
+  const pointsEarned = hasRealPhone ? Math.floor(total * POINTS_PER_CURRENCY_UNIT) : 0;
+  const newPointsBalance = currentPoints - redeemedPoints + pointsEarned;
+
+  if (hasRealPhone) {
+    await client.query('UPDATE customers SET loyalty_points = $1 WHERE id = $2', [newPointsBalance, customerId]);
+  }
 
   let orderNo = generateOrderNo();
   let order;
@@ -114,13 +156,13 @@ async function buildAndSaveOrder(client, opts) {
     );
   }
 
-  return { order: { ...order, items: preparedItems } };
+  return { order: { ...order, items: preparedItems, points_earned: pointsEarned, points_redeemed: redeemedPoints, points_balance: newPointsBalance } };
 }
 
 // POST /api/orders — عام (الموقع نفسه بيبعت هون). بنحسب الأسعار من قاعدة البيانات، مش من اللي بعته المتصفح،
 // عشان حدا ما يقدر يلعب بالسعر من أدوات المطوّر بالمتصفح ويطلب بسعر مزوّر.
 router.post('/', asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, address, orderType, notes, couponCode } = req.body || {};
+  const { items, customerName, customerPhone, address, orderType, notes, couponCode, redeemPoints } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -139,15 +181,18 @@ router.post('/', asyncHandler(async (req, res) => {
   try {
     await client.query('BEGIN');
     const result = await buildAndSaveOrder(client, {
-      items, customerName, customerPhone, address, notes, couponCode,
+      items, customerName, customerPhone, address, notes, couponCode, redeemPoints,
       orderType: orderType || 'dine-in',
       status: 'pending',
       paymentMethod: 'cash',
       chargeDeliveryFee: orderType === 'delivery',
-      enforceMinOrder: true
+      enforceMinOrder: true,
+      orderSource: 'online',
+      kitchenStatus: 'new'
     });
     if (result.error) { await client.query('ROLLBACK'); return res.status(result.error.status).json({ error: result.error.message }); }
     await client.query('COMMIT');
+    broadcast('new-order', result.order); // بث لحظي لشاشة المطبخ فوراً
     res.status(201).json(result.order);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -159,7 +204,7 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة). بيخصم المخزون تلقائياً حسب الوصفات
 router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, notes, couponCode, paymentMethod, tableNumber, kitchenStatus } = req.body || {};
+  const { items, customerName, customerPhone, notes, couponCode, paymentMethod, tableNumber, kitchenStatus, redeemPoints } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -179,6 +224,7 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
       address: '',
       notes,
       couponCode,
+      redeemPoints,
       orderType: tableNumber ? 'dine-in' : 'pos',
       status: 'delivered',
       paymentMethod: paymentMethod || 'cash',
@@ -193,6 +239,7 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
     await deductForOrderItems(client, items);
 
     await client.query('COMMIT');
+    if (result.order.kitchen_status === 'new') broadcast('new-order', result.order); // بث لحظي بس لو الطلب فعلاً داخل قائمة المطبخ
     res.status(201).json(result.order);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -213,7 +260,7 @@ router.patch('/:id/kitchen-status', requireStaffAuth, asyncHandler(async (req, r
 }));
 
 // GET /api/orders — محمي (لوحة التحكم). فلاتر: ?status=&type=&search=&from=&to=
-router.get('/', requireAuth, asyncHandler(async (req, res) => {
+router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { status, type, search, from, to } = req.query;
   const conditions = [];
   const params = [];
@@ -258,12 +305,26 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PATCH /api/orders/:id/status — محمي
-router.patch('/:id/status', requireAuth, asyncHandler(async (req, res) => {
-  const { status } = req.body || {};
+router.patch('/:id/status', requireAnyAuth, asyncHandler(async (req, res) => {
+  const { status, cancelReason } = req.body || {};
   if (!VALID_STATUSES.includes(status)) {
     return res.status(400).json({ error: `الحالة لازم تكون وحدة من: ${VALID_STATUSES.join(', ')}` });
   }
-  const result = await pool.query('UPDATE orders SET status = $1 WHERE id = $2 RETURNING *', [status, req.params.id]);
+
+  const isCancelling = status === 'cancelled';
+  // إلغاء طلب مكتمل من طرف موظف كاشير (مو لوحة التحكم) لازم يكون بدور مدير فما فوق
+  if (isCancelling && req.staff && !['admin', 'manager'].includes(req.staff.role)) {
+    return res.status(403).json({ error: 'إلغاء طلب بيحتاج صلاحية مدير' });
+  }
+
+  const actorName = req.staff?.name || req.admin?.email || null;
+
+  const result = await pool.query(
+    `UPDATE orders SET status = $1
+      ${isCancelling ? ', cancelled_by = $3, cancelled_at = now(), cancel_reason = $4' : ''}
+     WHERE id = $2 RETURNING *`,
+    isCancelling ? [status, req.params.id, actorName, cancelReason || ''] : [status, req.params.id]
+  );
   if (result.rows.length === 0) return res.status(404).json({ error: 'الطلب مش موجود' });
   res.json(result.rows[0]);
 }));

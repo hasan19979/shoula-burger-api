@@ -16,6 +16,9 @@ const staffRoutes = require('./routes/staff');
 const modifiersRoutes = require('./routes/modifiers');
 const inventoryRoutes = require('./routes/inventory');
 const tablesRoutes = require('./routes/tables');
+const attendanceRoutes = require('./routes/attendance');
+const customersRoutes = require('./routes/customers');
+const suppliersRoutes = require('./routes/suppliers');
 
 const app = express();
 
@@ -64,6 +67,9 @@ app.use('/api/staff', staffRoutes);
 app.use('/api/modifiers', modifiersRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/tables', tablesRoutes);
+app.use('/api/attendance', attendanceRoutes);
+app.use('/api/customers', customersRoutes);
+app.use('/api/suppliers', suppliersRoutes);
 
 // أي مسار مش موجود
 app.use((req, res) => {

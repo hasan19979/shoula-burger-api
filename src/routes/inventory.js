@@ -3,6 +3,7 @@ const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
 const requireStaffAuth = require('../middleware/staffAuth');
+const { requireStaffRole } = require('../middleware/staffAuth');
 
 const router = express.Router();
 
@@ -44,8 +45,8 @@ router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // POST /api/inventory/:id/adjust — محمي: شراء/هدر/تعديل يدوي (بيسجل حركة ويحدّث الكمية بمعاملة واحدة)
-router.post('/:id/adjust', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { delta, type, note } = req.body || {};
+router.post('/:id/adjust', requireStaffAuth, requireStaffRole('admin', 'manager'), asyncHandler(async (req, res) => {
+  const { delta, type, note, supplierId, unitCost } = req.body || {};
   if (!delta || !type) return res.status(400).json({ error: 'الكمية ونوع الحركة مطلوبين' });
 
   const client = await pool.connect();
@@ -57,8 +58,8 @@ router.post('/:id/adjust', requireStaffAuth, asyncHandler(async (req, res) => {
     );
     if (!itemRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'المادة مش موجودة' }); }
     await client.query(
-      'INSERT INTO stock_movements (inventory_item_id, type, quantity, note) VALUES ($1,$2,$3,$4)',
-      [req.params.id, type, delta, note || '']
+      'INSERT INTO stock_movements (inventory_item_id, type, quantity, note, supplier_id, unit_cost) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.params.id, type, delta, note || '', supplierId || null, unitCost || null]
     );
     await client.query('COMMIT');
     res.json(itemRes.rows[0]);
