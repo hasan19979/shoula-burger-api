@@ -202,9 +202,9 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 }));
 
-// POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة). بيخصم المخزون تلقائياً حسب الوصفات
+// POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة أو توصيل هاتفي). بيخصم المخزون تلقائياً حسب الوصفات
 router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, notes, couponCode, paymentMethod, tableNumber, kitchenStatus, redeemPoints } = req.body || {};
+  const { items, customerName, customerPhone, address, notes, couponCode, paymentMethod, tableNumber, orderType, kitchenStatus, redeemPoints } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -212,6 +212,10 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
   const validMethods = ['cash', 'card', 'wallet', 'bank-transfer', 'other'];
   if (paymentMethod && !validMethods.includes(paymentMethod)) {
     return res.status(400).json({ error: 'طريقة دفع غير معروفة' });
+  }
+  const resolvedOrderType = orderType || (tableNumber ? 'dine-in' : 'pos');
+  if (resolvedOrderType === 'delivery' && !address) {
+    return res.status(400).json({ error: 'عنوان التوصيل مطلوب' });
   }
 
   const client = await pool.connect();
@@ -221,14 +225,14 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
       items,
       customerName: customerName || 'زبون الكاشير',
       customerPhone: customerPhone || '-',
-      address: '',
+      address: address || '',
       notes,
       couponCode,
       redeemPoints,
-      orderType: tableNumber ? 'dine-in' : 'pos',
+      orderType: resolvedOrderType,
       status: 'delivered',
       paymentMethod: paymentMethod || 'cash',
-      chargeDeliveryFee: false,
+      chargeDeliveryFee: resolvedOrderType === 'delivery',
       tableNumber: tableNumber || null,
       cashierName: req.staff?.name || null,
       orderSource: 'pos',
@@ -240,6 +244,7 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
 
     await client.query('COMMIT');
     if (result.order.kitchen_status === 'new') broadcast('new-order', result.order); // بث لحظي بس لو الطلب فعلاً داخل قائمة المطبخ
+    broadcast('print-order', result.order); // بث لكل الأجهزة — بس الجهاز المحدد "جهاز الطباعة" رح يطبعه فعلياً
     res.status(201).json(result.order);
   } catch (err) {
     await client.query('ROLLBACK');

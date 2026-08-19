@@ -52,4 +52,29 @@ router.get('/lookup', requireStaffAuth, asyncHandler(async (req, res) => {
   res.json(rows[0] || null);
 }));
 
+// GET /api/customers/address-history?phone=... — عام (بدون تسجيل دخول)، لموقع الطلب العام:
+// بيرجع اسم الزبون (لو معروف) وآخر ٥ عناوين مختلفة استخدمها بطلبات سابقة، الأحدث أولاً
+router.get('/address-history', asyncHandler(async (req, res) => {
+  const { phone } = req.query;
+  if (!phone || String(phone).trim().length < 6) {
+    return res.json({ name: null, addresses: [] }); // رقم قصير/فاضي — منرجع نتيجة فاضية بهدوء بدل خطأ
+  }
+
+  const { rows: addressRows } = await pool.query(
+    `SELECT address, MAX(created_at) AS last_used
+     FROM orders
+     WHERE customer_phone = $1 AND address IS NOT NULL AND address != '' AND status != 'cancelled'
+     GROUP BY address
+     ORDER BY last_used DESC
+     LIMIT 5`,
+    [phone]
+  );
+  const { rows: nameRows } = await pool.query('SELECT name FROM customers WHERE phone = $1', [phone]);
+
+  res.json({
+    name: nameRows[0]?.name || null,
+    addresses: addressRows.map((r) => r.address),
+  });
+}));
+
 module.exports = router;
