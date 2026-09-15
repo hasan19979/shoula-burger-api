@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 
 const router = express.Router();
 
@@ -73,7 +74,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/products — محمي
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const {
     category_id, name, description, price, icon, image_url,
     start_mode, is_featured, is_popular, in_stock, stock_quantity,
@@ -117,7 +118,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PUT /api/products/:id — محمي، بيحدّث الحقول المرسلة بس + المكونات كاملة لو انبعتت
-router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
   const fields = req.body || {};
   const allowed = ['category_id','name','description','price','icon','image_url','start_mode','is_featured','is_popular','in_stock','stock_quantity','sort_order','cost','sku','barcode'];
@@ -170,7 +171,7 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PATCH /api/products/:id/stock — محمي، تحديث سريع لحالة التوفر (يستخدم من زر "نفذت الكمية" باللوحة)
-router.patch('/:id/stock', requireAuth, asyncHandler(async (req, res) => {
+router.patch('/:id/stock', requireAnyAuth, asyncHandler(async (req, res) => {
   const { in_stock, stock_quantity } = req.body || {};
   const result = await pool.query(
     `UPDATE products SET in_stock = COALESCE($1, in_stock), stock_quantity = $2, updated_at = now()
@@ -182,14 +183,14 @@ router.patch('/:id/stock', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/products/:id — محمي
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING id', [req.params.id]);
   if (result.rows.length === 0) return res.status(404).json({ error: 'الصنف مش موجود' });
   res.json({ success: true });
 }));
 
 // PUT /api/products/:id/modifier-groups — محمي: يحدد قائمة مجموعات الـ Modifiers المرتبطة بالمنتج (استبدال كامل)
-router.put('/:id/modifier-groups', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id/modifier-groups', requireAnyAuth, asyncHandler(async (req, res) => {
   const { groupIds } = req.body || {};
   if (!Array.isArray(groupIds)) return res.status(400).json({ error: 'قائمة المجموعات مطلوبة' });
 
@@ -214,7 +215,7 @@ router.put('/:id/modifier-groups', requireAuth, asyncHandler(async (req, res) =>
 }));
 
 // PUT /api/products/:id/recipe — محمي: يحدد وصفة المنتج (استبدال كامل)
-router.put('/:id/recipe', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id/recipe', requireAnyAuth, asyncHandler(async (req, res) => {
   const { ingredients } = req.body || {}; // [{ inventoryItemId, quantity }]
   if (!Array.isArray(ingredients)) return res.status(400).json({ error: 'قائمة المكونات مطلوبة' });
 

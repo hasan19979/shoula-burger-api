@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 const requireStaffAuth = require('../middleware/staffAuth');
 const { requireStaffRole } = require('../middleware/staffAuth');
 
@@ -14,7 +15,7 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/inventory — محمي
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, unit, quantity, min_threshold, cost_per_unit } = req.body || {};
   if (!name) return res.status(400).json({ error: 'اسم المادة مطلوب' });
   const result = await pool.query(
@@ -25,7 +26,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PUT /api/inventory/:id — محمي
-router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, unit, min_threshold, cost_per_unit } = req.body || {};
   const result = await pool.query(
     `UPDATE inventory_items SET name = COALESCE($1,name), unit = COALESCE($2,unit),
@@ -38,7 +39,7 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/inventory/:id — محمي
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const result = await pool.query('DELETE FROM inventory_items WHERE id = $1 RETURNING id', [req.params.id]);
   if (!result.rows.length) return res.status(404).json({ error: 'المادة مش موجودة' });
   res.json({ success: true });

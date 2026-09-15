@@ -26,7 +26,10 @@ async function buildAndSaveOrder(client, opts) {
 
   const productIds = items.map(i => i.productId);
   const { rows: dbProducts } = await client.query(
-    'SELECT id, name, price, in_stock FROM products WHERE id = ANY($1)',
+    `SELECT p.id, p.name, p.price, p.in_stock, COALESCE(c.print_order, 999) AS category_print_order
+     FROM products p
+     LEFT JOIN categories c ON c.id = p.category_id
+     WHERE p.id = ANY($1)`,
     [productIds]
   );
   const productById = Object.fromEntries(dbProducts.map(p => [p.id, p]));
@@ -65,7 +68,8 @@ async function buildAndSaveOrder(client, opts) {
       product_id: product.id, product_name: product.name, quantity: qty,
       unit_price: unitPrice,
       included_ingredients: JSON.stringify(includedList),
-      line_total: lineTotal
+      line_total: lineTotal,
+      print_order: product.category_print_order
     });
   }
 
@@ -286,7 +290,11 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   if (orders.length) {
     const orderIds = orders.map(o => o.id);
     const itemsRes = await pool.query(
-      'SELECT * FROM order_items WHERE order_id = ANY($1) ORDER BY id',
+      `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order
+       FROM order_items oi
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN categories c ON c.id = p.category_id
+       WHERE oi.order_id = ANY($1) ORDER BY oi.id`,
       [orderIds]
     );
     const itemsByOrder = {};
@@ -305,7 +313,14 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
 router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (orderRes.rows.length === 0) return res.status(404).json({ error: 'الطلب مش موجود' });
-  const itemsRes = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [req.params.id]);
+  const itemsRes = await pool.query(
+    `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order
+     FROM order_items oi
+     LEFT JOIN products p ON p.id = oi.product_id
+     LEFT JOIN categories c ON c.id = p.category_id
+     WHERE oi.order_id = $1`,
+    [req.params.id]
+  );
   res.json({ ...orderRes.rows[0], items: itemsRes.rows });
 }));
 

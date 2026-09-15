@@ -2,6 +2,7 @@ const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 
 const router = express.Router();
 
@@ -15,7 +16,7 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/modifiers — محمي: مجموعة جديدة
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, selection_type, required, min_select, max_select } = req.body || {};
   if (!name) return res.status(400).json({ error: 'اسم المجموعة مطلوب' });
   const result = await pool.query(
@@ -27,7 +28,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PUT /api/modifiers/:id — محمي: تعديل بيانات المجموعة
-router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, selection_type, required, min_select, max_select } = req.body || {};
   const result = await pool.query(
     `UPDATE modifier_groups SET
@@ -41,14 +42,14 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/modifiers/:id — محمي
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const result = await pool.query('DELETE FROM modifier_groups WHERE id = $1 RETURNING id', [req.params.id]);
   if (!result.rows.length) return res.status(404).json({ error: 'المجموعة مش موجودة' });
   res.json({ success: true });
 }));
 
 // POST /api/modifiers/:id/options — محمي: خيار جديد بمجموعة
-router.post('/:id/options', requireAuth, asyncHandler(async (req, res) => {
+router.post('/:id/options', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, price, default_included } = req.body || {};
   if (!name) return res.status(400).json({ error: 'اسم الخيار مطلوب' });
   const result = await pool.query(
@@ -59,7 +60,7 @@ router.post('/:id/options', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PUT /api/modifiers/options/:optionId — محمي
-router.put('/options/:optionId', requireAuth, asyncHandler(async (req, res) => {
+router.put('/options/:optionId', requireAnyAuth, asyncHandler(async (req, res) => {
   const { name, price, default_included } = req.body || {};
   const result = await pool.query(
     `UPDATE modifier_options SET name = COALESCE($1,name), price = COALESCE($2,price), default_included = COALESCE($3,default_included)
@@ -71,7 +72,7 @@ router.put('/options/:optionId', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/modifiers/options/:optionId — محمي
-router.delete('/options/:optionId', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/options/:optionId', requireAnyAuth, asyncHandler(async (req, res) => {
   const result = await pool.query('DELETE FROM modifier_options WHERE id = $1 RETURNING id', [req.params.optionId]);
   if (!result.rows.length) return res.status(404).json({ error: 'الخيار مش موجود' });
   res.json({ success: true });

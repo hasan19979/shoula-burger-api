@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS categories (
   name TEXT NOT NULL,
   icon TEXT NOT NULL DEFAULT 'ti-circle-dot',
   sort_order INT NOT NULL DEFAULT 0,
+  print_order INT NOT NULL DEFAULT 999, -- ترتيب الطباعة على الفاتورة — منفصل تماماً عن ترتيب عرض المنيو (sort_order)
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -276,3 +277,10 @@ ALTER TABLE staff_users ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(10,2);
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS loyalty_points INT NOT NULL DEFAULT 0;
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS supplier_id INT REFERENCES suppliers(id) ON DELETE SET NULL;
 ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4);
+
+-- ترتيب الطباعة بالفاتورة (منفصل عن ترتيب عرض المنيو) — أي تصنيف بدون قيمة محددة بيضل 999 (آخر شي تلقائياً)
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS print_order INT NOT NULL DEFAULT 999;
+UPDATE categories SET print_order = 10 WHERE name = 'برجر لحمة';
+UPDATE categories SET print_order = 20 WHERE name = 'سندويشات دجاج';
+UPDATE categories SET print_order = 30 WHERE name = 'أجنحة دجاج';
+UPDATE categories SET print_order = 40 WHERE name = 'إضافات وبطاطا';
