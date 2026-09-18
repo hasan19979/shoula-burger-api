@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS settings (
   tagline TEXT NOT NULL DEFAULT '',
   logo_letter TEXT NOT NULL DEFAULT 'ش',
   logo_image TEXT NOT NULL DEFAULT '',
+  tagline_image TEXT NOT NULL DEFAULT '',
   hours_text TEXT NOT NULL DEFAULT '',
   open_time TEXT NOT NULL DEFAULT '13:00', -- HH:MM 24h
   close_time TEXT NOT NULL DEFAULT '00:00',
@@ -284,3 +285,6 @@ UPDATE categories SET print_order = 10 WHERE name = 'برجر لحمة';
 UPDATE categories SET print_order = 20 WHERE name = 'سندويشات دجاج';
 UPDATE categories SET print_order = 30 WHERE name = 'أجنحة دجاج';
 UPDATE categories SET print_order = 40 WHERE name = 'إضافات وبطاطا';
+
+-- صورة زخرفية للشعار/الجملة التسويقية (خط يدوي جاهز كصورة) — تُستخدم بالفاتورة بدل النص العادي
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS tagline_image TEXT NOT NULL DEFAULT '';
