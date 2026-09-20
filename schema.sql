@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS settings (
   logo_letter TEXT NOT NULL DEFAULT 'ش',
   logo_image TEXT NOT NULL DEFAULT '',
   tagline_image TEXT NOT NULL DEFAULT '',
+  receipt_item_font_size INT NOT NULL DEFAULT 14,
+  receipt_col_qty_width INT NOT NULL DEFAULT 7,
+  receipt_col_price_width INT NOT NULL DEFAULT 9,
+  receipt_col_total_width INT NOT NULL DEFAULT 10,
   hours_text TEXT NOT NULL DEFAULT '',
   open_time TEXT NOT NULL DEFAULT '13:00', -- HH:MM 24h
   close_time TEXT NOT NULL DEFAULT '00:00',
@@ -63,6 +67,18 @@ CREATE TABLE IF NOT EXISTS product_ingredients (
   id SERIAL PRIMARY KEY,
   product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  default_included BOOLEAN NOT NULL DEFAULT true -- true = مكوّن أساسي (يبلش مفعّل، الزبون يقدر يشيله) | false = إضافة اختيارية (تبلش مطفية، الزبون يقدر يضيفها)
+);
+
+-- خيارات نوع/حجم الصنف (زي عادي/دبل/تربل) بسعر مختلف لكل خيار — منفصل تماماً عن نظام المكونات
+CREATE TABLE IF NOT EXISTS product_variants (
+  id SERIAL PRIMARY KEY,
+  product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  price_delta NUMERIC(10,2) NOT NULL DEFAULT 0, -- فرق السعر عن السعر الأساسي للصنف (٠ للخيار الافتراضي عادةً)
+  is_default BOOLEAN NOT NULL DEFAULT false,
   sort_order INT NOT NULL DEFAULT 0
 );
 
@@ -253,7 +269,8 @@ CREATE TABLE IF NOT EXISTS restaurant_tables (
   status TEXT NOT NULL DEFAULT 'available', -- available | occupied | reserved | needs-cleaning
   party_size INT,
   opened_at TIMESTAMPTZ,
-  cashier_name TEXT
+  cashier_name TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT true
 );
 
 -- توسيع جدول المنتجات ليدعم حقول الكاشير (تكلفة، SKU، باركود)
@@ -286,5 +303,30 @@ UPDATE categories SET print_order = 20 WHERE name = 'سندويشات دجاج';
 UPDATE categories SET print_order = 30 WHERE name = 'أجنحة دجاج';
 UPDATE categories SET print_order = 40 WHERE name = 'إضافات وبطاطا';
 
+-- تحديث لاحق: الدجاج يطبع أول بالفاتورة
+UPDATE categories SET print_order = 10 WHERE name = 'سندويشات دجاج';
+UPDATE categories SET print_order = 20 WHERE name = 'أجنحة دجاج';
+UPDATE categories SET print_order = 30 WHERE name = 'برجر لحمة';
+
 -- صورة زخرفية للشعار/الجملة التسويقية (خط يدوي جاهز كصورة) — تُستخدم بالفاتورة بدل النص العادي
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS tagline_image TEXT NOT NULL DEFAULT '';
+
+-- تحديث اسم المطعم
+UPDATE settings SET restaurant_name = 'سوبر برجر' WHERE id = 1;
+
+-- إعدادات قابلة للتعديل بشاشة الإعدادات: حجم خط اسم الصنف بالفاتورة، وعرض أعمدة الكمية/السعر/المجموع (بالمليمتر)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_item_font_size INT NOT NULL DEFAULT 14;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_col_qty_width INT NOT NULL DEFAULT 7;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_col_price_width INT NOT NULL DEFAULT 9;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_col_total_width INT NOT NULL DEFAULT 10;
+
+-- إعدادات نقاط الولاء — قابلة للتعديل بشاشة الإعدادات بدل ما تكون ثابتة بالكود
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS loyalty_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS loyalty_earn_amount NUMERIC(10,2) NOT NULL DEFAULT 10; -- المبلغ اللازم لكسب نقطة وحدة
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS loyalty_redeem_value NUMERIC(10,2) NOT NULL DEFAULT 0.5; -- قيمة النقطة الواحدة عند الاستبدال
+
+-- تفعيل/تعطيل طاولة من إعدادات النظام
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
+
+-- مكوّن أساسي (يبلش مفعّل) مقابل إضافة اختيارية (تبلش مطفية) — المكونات القديمة الموجودة تضل "أساسية" بشكل افتراضي، ما بتغيّر سلوكها الحالي
+ALTER TABLE product_ingredients ADD COLUMN IF NOT EXISTS default_included BOOLEAN NOT NULL DEFAULT true;

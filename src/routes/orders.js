@@ -26,7 +26,7 @@ async function buildAndSaveOrder(client, opts) {
 
   const productIds = items.map(i => i.productId);
   const { rows: dbProducts } = await client.query(
-    `SELECT p.id, p.name, p.price, p.in_stock, COALESCE(c.print_order, 999) AS category_print_order
+    `SELECT p.id, p.name, p.price, p.in_stock, COALESCE(c.print_order, 999) AS category_print_order, c.name AS category_name
      FROM products p
      LEFT JOIN categories c ON c.id = p.category_id
      WHERE p.id = ANY($1)`,
@@ -46,6 +46,17 @@ async function buildAndSaveOrder(client, opts) {
     modifierOptionsById = Object.fromEntries(modOptions.map(o => [o.id, o]));
   }
 
+  // نفس المبدأ لخيارات النوع/الحجم (زي عادي/دبل/تربل) — السعر دايماً من قاعدة البيانات، مش من المتصفح
+  const allVariantIds = [...new Set(items.map(i => i.variantId).filter(Boolean))];
+  let variantsById = {};
+  if (allVariantIds.length) {
+    const { rows: variantRows } = await client.query(
+      'SELECT id, product_id, name, price_delta FROM product_variants WHERE id = ANY($1)',
+      [allVariantIds]
+    );
+    variantsById = Object.fromEntries(variantRows.map(v => [v.id, v]));
+  }
+
   let subtotal = 0;
   const preparedItems = [];
   for (const item of items) {
@@ -56,20 +67,26 @@ async function buildAndSaveOrder(client, opts) {
 
     const selectedOptions = (item.modifierOptionIds || []).map(id => modifierOptionsById[id]).filter(Boolean);
     const modifiersUnitPrice = selectedOptions.reduce((sum, o) => sum + Number(o.price), 0);
-    const unitPrice = Number(product.price) + modifiersUnitPrice;
+    const selectedVariant = item.variantId ? variantsById[item.variantId] : null;
+    const variantUnitPrice = selectedVariant ? Number(selectedVariant.price_delta) : 0;
+    const unitPrice = Number(product.price) + modifiersUnitPrice + variantUnitPrice;
     const lineTotal = unitPrice * qty;
     subtotal += lineTotal;
+
+    // بنضيف اسم النوع المختار (زي "دبل") لاسم الصنف نفسه، حتى يبين واضح بكل الفواتير بدون ما نلمس كل قالب طباعة لحاله
+    const displayName = selectedVariant ? `${product.name} (${selectedVariant.name})` : product.name;
 
     // بنخزّن أسماء الإضافات المدفوعة (بسعرها) والمكونات الأساسية المتبقية سوا، لعرضها بالإيصال والمطبخ
     const modifierLabels = selectedOptions.map(o => (Number(o.price) > 0 ? `${o.name} (+${o.price})` : o.name));
     const includedList = item.includedIngredients?.length ? item.includedIngredients : modifierLabels;
 
     preparedItems.push({
-      product_id: product.id, product_name: product.name, quantity: qty,
+      product_id: product.id, product_name: displayName, quantity: qty,
       unit_price: unitPrice,
       included_ingredients: JSON.stringify(includedList),
       line_total: lineTotal,
-      print_order: product.category_print_order
+      print_order: product.category_print_order,
+      category_name: product.category_name
     });
   }
 
@@ -95,9 +112,12 @@ async function buildAndSaveOrder(client, opts) {
     await client.query('UPDATE coupons SET used_count = used_count + 1 WHERE id = $1', [coupon.id]);
   }
 
-  const { rows: settingsRows } = await client.query('SELECT delivery_fee, min_order FROM settings WHERE id = 1');
+  const { rows: settingsRows } = await client.query('SELECT delivery_fee, min_order, loyalty_enabled, loyalty_earn_amount, loyalty_redeem_value FROM settings WHERE id = 1');
   const deliveryFee = chargeDeliveryFee ? Number(settingsRows[0]?.delivery_fee || 0) : 0;
   const minOrder = Number(settingsRows[0]?.min_order || 0);
+  const loyaltyEnabled = settingsRows[0]?.loyalty_enabled !== false;
+  const loyaltyEarnAmount = Number(settingsRows[0]?.loyalty_earn_amount || 10);
+  const loyaltyRedeemValue = Number(settingsRows[0]?.loyalty_redeem_value || 0.5);
 
   if (enforceMinOrder && subtotal < minOrder) {
     return { error: { status: 400, message: `الحد الأدنى للطلب ${minOrder}، سلتك الحالية ${subtotal}` } };
@@ -113,22 +133,23 @@ async function buildAndSaveOrder(client, opts) {
   const customerId = customerRes.rows[0].id;
   const currentPoints = customerRes.rows[0].loyalty_points;
 
-  // سياسة الولاء: نقطة لكل ١٠₪ مصروفة، وقيمة النقطة عند الصرف ٠.٥٠₪ — بدون حد أدنى للاستخدام
-  // ما بنطبقها إطلاقاً لو ما في رقم جوال حقيقي (زبون كاشير عابر بدون رقم) — منعاً لتجميع نقاط وهمية بحساب مشترك
+  // سياسة الولاء (من الإعدادات — مو ثابتة بالكود): نقطة لكل loyaltyEarnAmount مصروفة، وقيمة النقطة عند الصرف loyaltyRedeemValue
+  // ما بنطبقها إطلاقاً لو النظام مطفي، أو لو ما في رقم جوال حقيقي (زبون كاشير عابر بدون رقم) — منعاً لتجميع نقاط وهمية بحساب مشترك
   const hasRealPhone = customerPhone && customerPhone !== '-';
-  const POINTS_PER_CURRENCY_UNIT = 1 / 10;
-  const POINT_VALUE = 0.5;
+  const loyaltyActive = loyaltyEnabled && hasRealPhone;
+  const POINTS_PER_CURRENCY_UNIT = loyaltyEarnAmount > 0 ? 1 / loyaltyEarnAmount : 0;
+  const POINT_VALUE = loyaltyRedeemValue;
 
-  const requestedRedeem = hasRealPhone ? Math.max(0, parseInt(opts.redeemPoints, 10) || 0) : 0;
+  const requestedRedeem = loyaltyActive ? Math.max(0, parseInt(opts.redeemPoints, 10) || 0) : 0;
   const redeemedPoints = Math.min(requestedRedeem, currentPoints);
   const pointsDiscount = Math.min(redeemedPoints * POINT_VALUE, subtotal - discount);
   discount += pointsDiscount;
 
   const total = subtotal - discount + deliveryFee;
-  const pointsEarned = hasRealPhone ? Math.floor(total * POINTS_PER_CURRENCY_UNIT) : 0;
+  const pointsEarned = loyaltyActive ? Math.floor(total * POINTS_PER_CURRENCY_UNIT) : 0;
   const newPointsBalance = currentPoints - redeemedPoints + pointsEarned;
 
-  if (hasRealPhone) {
+  if (loyaltyActive) {
     await client.query('UPDATE customers SET loyalty_points = $1 WHERE id = $2', [newPointsBalance, customerId]);
   }
 
@@ -290,7 +311,7 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   if (orders.length) {
     const orderIds = orders.map(o => o.id);
     const itemsRes = await pool.query(
-      `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order
+      `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order, c.name AS category_name
        FROM order_items oi
        LEFT JOIN products p ON p.id = oi.product_id
        LEFT JOIN categories c ON c.id = p.category_id
@@ -314,7 +335,7 @@ router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
   if (orderRes.rows.length === 0) return res.status(404).json({ error: 'الطلب مش موجود' });
   const itemsRes = await pool.query(
-    `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order
+    `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order, c.name AS category_name
      FROM order_items oi
      LEFT JOIN products p ON p.id = oi.product_id
      LEFT JOIN categories c ON c.id = p.category_id

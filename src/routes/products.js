@@ -11,12 +11,24 @@ async function attachIngredients(products) {
   const ids = products.map(p => p.id);
 
   const { rows: ingredientRows } = await pool.query(
-    'SELECT product_id, name FROM product_ingredients WHERE product_id = ANY($1) ORDER BY sort_order',
+    'SELECT product_id, name, default_included FROM product_ingredients WHERE product_id = ANY($1) ORDER BY sort_order',
     [ids]
   );
   const ingredientsByProduct = {};
   for (const row of ingredientRows) {
-    (ingredientsByProduct[row.product_id] ||= []).push(row.name);
+    (ingredientsByProduct[row.product_id] ||= []).push({ name: row.name, defaultIncluded: row.default_included });
+  }
+
+  const { rows: variantRows } = await pool.query(
+    'SELECT id, product_id, name, description, price_delta, is_default FROM product_variants WHERE product_id = ANY($1) ORDER BY sort_order',
+    [ids]
+  );
+  const variantsByProduct = {};
+  for (const row of variantRows) {
+    (variantsByProduct[row.product_id] ||= []).push({
+      id: row.id, name: row.name, description: row.description,
+      priceDelta: Number(row.price_delta), isDefault: row.is_default,
+    });
   }
 
   const { rows: modGroupRows } = await pool.query(
@@ -40,6 +52,7 @@ async function attachIngredients(products) {
   return products.map(p => ({
     ...p,
     ingredients: ingredientsByProduct[p.id] || [],
+    variants: variantsByProduct[p.id] || [],
     modifier_group_ids: modGroupsByProduct[p.id] || [],
     recipe: recipeByProduct[p.id] || [],
   }));
@@ -78,7 +91,7 @@ router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const {
     category_id, name, description, price, icon, image_url,
     start_mode, is_featured, is_popular, in_stock, stock_quantity,
-    sort_order, ingredients, cost, sku, barcode
+    sort_order, ingredients, variants, cost, sku, barcode
   } = req.body || {};
 
   if (!category_id || !name || price === undefined) {
@@ -101,14 +114,27 @@ router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
 
     if (Array.isArray(ingredients)) {
       for (let i = 0; i < ingredients.length; i++) {
+        const ing = ingredients[i];
+        // بيقبل شكلين — نص عادي (توافق مع القديم) أو كائن {name, defaultIncluded}
+        const ingName = typeof ing === 'string' ? ing : ing.name;
+        const defaultIncluded = typeof ing === 'string' ? true : ing.defaultIncluded !== false;
         await client.query(
-          'INSERT INTO product_ingredients (product_id, name, sort_order) VALUES ($1, $2, $3)',
-          [product.id, ingredients[i], i]
+          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included) VALUES ($1, $2, $3, $4)',
+          [product.id, ingName, i, defaultIncluded]
+        );
+      }
+    }
+    if (Array.isArray(variants)) {
+      for (let i = 0; i < variants.length; i++) {
+        const v = variants[i];
+        await client.query(
+          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, sort_order) VALUES ($1,$2,$3,$4,$5,$6)',
+          [product.id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, i]
         );
       }
     }
     await client.query('COMMIT');
-    res.status(201).json({ ...product, ingredients: ingredients || [] });
+    res.status(201).json({ ...product, ingredients: ingredients || [], variants: variants || [] });
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -151,9 +177,23 @@ router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
     if (Array.isArray(fields.ingredients)) {
       await client.query('DELETE FROM product_ingredients WHERE product_id = $1', [id]);
       for (let i = 0; i < fields.ingredients.length; i++) {
+        const ing = fields.ingredients[i];
+        const ingName = typeof ing === 'string' ? ing : ing.name;
+        const defaultIncluded = typeof ing === 'string' ? true : ing.defaultIncluded !== false;
         await client.query(
-          'INSERT INTO product_ingredients (product_id, name, sort_order) VALUES ($1, $2, $3)',
-          [id, fields.ingredients[i], i]
+          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included) VALUES ($1, $2, $3, $4)',
+          [id, ingName, i, defaultIncluded]
+        );
+      }
+    }
+
+    if (Array.isArray(fields.variants)) {
+      await client.query('DELETE FROM product_variants WHERE product_id = $1', [id]);
+      for (let i = 0; i < fields.variants.length; i++) {
+        const v = fields.variants[i];
+        await client.query(
+          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, sort_order) VALUES ($1,$2,$3,$4,$5,$6)',
+          [id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, i]
         );
       }
     }

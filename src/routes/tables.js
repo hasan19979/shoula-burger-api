@@ -1,19 +1,20 @@
 const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
-const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 const requireStaffAuth = require('../middleware/staffAuth');
 
 const router = express.Router();
 
-// GET /api/tables — عام
+// GET /api/tables — عام. بيرجع كل الطاولات (المفعّلة والمعطّلة) — شاشة الطاولات الحية بتفلتر
+// المعطّلة بنفسها، وشاشة الإعدادات بتوريهم كلهم للإدارة
 router.get('/', asyncHandler(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM restaurant_tables ORDER BY number');
   res.json(rows);
 }));
 
 // POST /api/tables — محمي: إضافة طاولة جديدة
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { number, seats } = req.body || {};
   if (!number) return res.status(400).json({ error: 'رقم الطاولة مطلوب' });
   const result = await pool.query(
@@ -21,6 +22,29 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     [number, seats || 4]
   );
   res.status(201).json(result.rows[0]);
+}));
+
+// PUT /api/tables/:id — محمي: تعديل رقم الطاولة وعدد الكراسي
+router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
+  const { number, seats } = req.body || {};
+  const result = await pool.query(
+    `UPDATE restaurant_tables SET number = COALESCE($1, number), seats = COALESCE($2, seats)
+     WHERE id = $3 RETURNING *`,
+    [number, seats, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'الطاولة مش موجودة' });
+  res.json(result.rows[0]);
+}));
+
+// PATCH /api/tables/:id/enabled — محمي: تفعيل/تعطيل طاولة من الإعدادات
+router.patch('/:id/enabled', requireAnyAuth, asyncHandler(async (req, res) => {
+  const { enabled } = req.body || {};
+  const result = await pool.query(
+    'UPDATE restaurant_tables SET enabled = $1 WHERE id = $2 RETURNING *',
+    [!!enabled, req.params.id]
+  );
+  if (!result.rows.length) return res.status(404).json({ error: 'الطاولة مش موجودة' });
+  res.json(result.rows[0]);
 }));
 
 // PATCH /api/tables/:id/open — محمي

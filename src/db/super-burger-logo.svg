@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <title>Super Burger Logo</title>
+  <desc>Vector logo with yellow hexagon, burger icon, three stars, and SUPER BURGER text.</desc>
+
+  <!-- Transparent background -->
+  <g id="badge">
+    <polygon points="300,280 900,280 1030,500 900,720 300,720 170,500"
+             fill="#FFD21A"/>
+
+    <!-- Stars -->
+    <polygon points="450,172 462,207 500,207 469,229 481,265 450,243 419,265 431,229 400,207 438,207"
+             fill="#FFD21A" stroke="#111111" stroke-width="6"/>
+    <polygon points="600,135 616,181 665,181 625,210 640,256 600,228 560,256 575,210 535,181 584,181"
+             fill="#FFD21A" stroke="#111111" stroke-width="6"/>
+    <polygon points="750,172 762,207 800,207 769,229 781,265 750,243 719,265 731,229 700,207 738,207"
+             fill="#FFD21A" stroke="#111111" stroke-width="6"/>
+
+    <!-- Burger top bun -->
+    <path d="M385 390
+             C400 335 470 305 600 305
+             C730 305 800 335 815 390
+             C820 408 808 425 790 425
+             H410
+             C392 425 380 408 385 390Z"
+          fill="#111111" stroke="#FFFFFF" stroke-width="18" stroke-linejoin="round"/>
+
+    <!-- Sesame -->
+    <ellipse cx="470" cy="355" rx="8" ry="18" fill="#FFFFFF" transform="rotate(-20 470 355)"/>
+    <ellipse cx="535" cy="342" rx="8" ry="18" fill="#FFFFFF" transform="rotate(10 535 342)"/>
+    <ellipse cx="605" cy="350" rx="8" ry="18" fill="#FFFFFF" transform="rotate(-5 605 350)"/>
+    <ellipse cx="675" cy="342" rx="8" ry="18" fill="#FFFFFF" transform="rotate(15 675 342)"/>
+    <ellipse cx="735" cy="360" rx="8" ry="18" fill="#FFFFFF" transform="rotate(-12 735 360)"/>
+
+    <!-- Filling -->
+    <path d="M410 455
+             C455 430 505 480 550 452
+             C590 425 635 482 680 452
+             C725 425 765 470 790 450"
+          fill="none" stroke="#111111" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="400" y="475" width="400" height="48" rx="24"
+          fill="#111111" stroke="#FFFFFF" stroke-width="12"/>
+    <rect x="420" y="545" width="360" height="30" rx="15"
+          fill="#111111" stroke="#FFFFFF" stroke-width="8"/>
+
+    <!-- Cheese -->
+    <path d="M430 590 H770 L700 590 L600 655 L500 590 Z" fill="#FFFFFF"/>
+
+    <!-- Lower filling -->
+    <path d="M430 610
+             C470 590 500 630 535 610
+             H665
+             C700 590 730 630 770 610"
+          fill="none" stroke="#111111" stroke-width="26" stroke-linecap="round"/>
+
+    <!-- Bottom bun -->
+    <path d="M405 650
+             C390 650 382 665 388 682
+             C405 735 470 755 600 755
+             C730 755 795 735 812 682
+             C818 665 810 650 795 650Z"
+          fill="#111111" stroke="#FFFFFF" stroke-width="18" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Wordmark -->
+  <g text-anchor="middle" font-family="Arial Black, DejaVu Sans, sans-serif" font-weight="900"
+     fill="#111111" stroke="#FFD21A" stroke-width="14" paint-order="stroke fill">
+    <text x="600" y="900" font-size="150" letter-spacing="-6">SUPER</text>
+    <text x="600" y="1040" font-size="140" letter-spacing="-7">BURGER</text>
+  </g>
+</svg>

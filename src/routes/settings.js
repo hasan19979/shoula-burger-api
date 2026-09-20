@@ -1,14 +1,16 @@
 const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
-const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 
 const router = express.Router();
 
 const ALLOWED_FIELDS = [
-  'restaurant_name','tagline','logo_letter','logo_image','hours_text',
+  'restaurant_name','tagline','logo_letter','logo_image','tagline_image','hours_text',
   'open_time','close_time','whatsapp_number','maps_url','currency',
-  'delivery_fee','min_order'
+  'delivery_fee','min_order',
+  'receipt_item_font_size','receipt_col_qty_width','receipt_col_price_width','receipt_col_total_width',
+  'loyalty_enabled','loyalty_earn_amount','loyalty_redeem_value'
 ];
 
 // GET /api/settings — عام، الموقع بيقرا منه مباشرة
@@ -17,8 +19,8 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(result.rows[0] || {});
 }));
 
-// PUT /api/settings — محمي
-router.put('/', requireAuth, asyncHandler(async (req, res) => {
+// PUT /api/settings — محمي (تسجيل دخول لوحة التحكم أو رمز موظف)
+router.put('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const fields = req.body || {};
   const sets = [];
   const params = [];
