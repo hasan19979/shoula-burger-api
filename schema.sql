@@ -330,3 +330,26 @@ ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL 
 
 -- مكوّن أساسي (يبلش مفعّل) مقابل إضافة اختيارية (تبلش مطفية) — المكونات القديمة الموجودة تضل "أساسية" بشكل افتراضي، ما بتغيّر سلوكها الحالي
 ALTER TABLE product_ingredients ADD COLUMN IF NOT EXISTS default_included BOOLEAN NOT NULL DEFAULT true;
+
+-- سجل السحوبات النقدية من الصندوق
+CREATE TABLE IF NOT EXISTS cash_withdrawals (
+  id SERIAL PRIMARY KEY,
+  amount NUMERIC(10,2) NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  staff_name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- جرد الصندوق — سجل مطابقة يومي بين المتوقع بالصندوق والفعلي
+CREATE TABLE IF NOT EXISTS cash_register_audits (
+  id SERIAL PRIMARY KEY,
+  audit_date DATE NOT NULL UNIQUE,
+  opening_balance NUMERIC(10,2) NOT NULL,
+  orders_total NUMERIC(10,2) NOT NULL,
+  withdrawals_total NUMERIC(10,2) NOT NULL,
+  expected_amount NUMERIC(10,2) NOT NULL,
+  actual_amount NUMERIC(10,2) NOT NULL,
+  difference NUMERIC(10,2) NOT NULL,
+  staff_name TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

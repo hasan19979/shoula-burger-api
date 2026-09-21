@@ -19,6 +19,8 @@ const tablesRoutes = require('./routes/tables');
 const attendanceRoutes = require('./routes/attendance');
 const customersRoutes = require('./routes/customers');
 const suppliersRoutes = require('./routes/suppliers');
+const withdrawalsRoutes = require('./routes/withdrawals');
+const cashAuditRoutes = require('./routes/cashAudit');
 
 const app = express();
 
@@ -70,6 +72,8 @@ app.use('/api/tables', tablesRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/suppliers', suppliersRoutes);
+app.use('/api/withdrawals', withdrawalsRoutes);
+app.use('/api/cash-audit', cashAuditRoutes);
 
 // أي مسار مش موجود
 app.use((req, res) => {
