@@ -40,6 +40,24 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   res.json(rows[0] || null);
 }));
 
+// POST /api/cash-audit/opening-balance — حفظ رصيد الصندوق الافتتاحي لحاله (الصبح مثلاً، قبل ما تبلش الوردية)
+// بدون ما يلمس باقي حقول الجرد لو كانت موجودة أصلاً (يعني ما بيمسح جرد مكتمل بالغلط)
+router.post('/opening-balance', requireAnyAuth, asyncHandler(async (req, res) => {
+  const { date, openingBalance } = req.body || {};
+  if (!date || openingBalance === undefined) {
+    return res.status(400).json({ error: 'التاريخ والرصيد الافتتاحي مطلوبين' });
+  }
+  const staffName = req.staff?.name || req.admin?.email || null;
+  const result = await pool.query(
+    `INSERT INTO cash_register_audits (audit_date, opening_balance, staff_name)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (audit_date) DO UPDATE SET opening_balance = EXCLUDED.opening_balance, staff_name = EXCLUDED.staff_name
+     RETURNING *`,
+    [date, openingBalance, staffName]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
 // POST /api/cash-audit — حفظ (أو تصحيح) جرد يوم معيّن
 router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { date, openingBalance, ordersTotal, withdrawalsTotal, actualAmount } = req.body || {};

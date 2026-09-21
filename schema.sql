@@ -337,19 +337,35 @@ CREATE TABLE IF NOT EXISTS cash_withdrawals (
   amount NUMERIC(10,2) NOT NULL,
   reason TEXT NOT NULL DEFAULT '',
   staff_name TEXT,
+  recipient_type TEXT, -- 'supplier' | 'staff' | null (سحبة عامة بدون مستلم محدد)
+  recipient_id INT,
+  recipient_name TEXT, -- نسخة من اسم المستلم وقت السحبة، حتى يضل السجل واضح حتى لو انحذف المورد/الموظف لاحقاً
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- جرد الصندوق — سجل مطابقة يومي بين المتوقع بالصندوق والفعلي
+-- جرد الصندوق — سجل مطابقة يومي بين المتوقع بالصندوق والفعلي. الحقول غير الرصيد الافتتاحي
+-- تصير معروفة بس وقت إكمال الجرد الكامل — ممكن نسجّل الرصيد الافتتاحي لحاله الصبح قبل ما نعمل الجرد
 CREATE TABLE IF NOT EXISTS cash_register_audits (
   id SERIAL PRIMARY KEY,
   audit_date DATE NOT NULL UNIQUE,
   opening_balance NUMERIC(10,2) NOT NULL,
-  orders_total NUMERIC(10,2) NOT NULL,
-  withdrawals_total NUMERIC(10,2) NOT NULL,
-  expected_amount NUMERIC(10,2) NOT NULL,
-  actual_amount NUMERIC(10,2) NOT NULL,
-  difference NUMERIC(10,2) NOT NULL,
+  orders_total NUMERIC(10,2),
+  withdrawals_total NUMERIC(10,2),
+  expected_amount NUMERIC(10,2),
+  actual_amount NUMERIC(10,2),
+  difference NUMERIC(10,2),
   staff_name TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- سحوبات مرتبطة بمورد أو موظف محدد
+ALTER TABLE cash_withdrawals ADD COLUMN IF NOT EXISTS recipient_type TEXT;
+ALTER TABLE cash_withdrawals ADD COLUMN IF NOT EXISTS recipient_id INT;
+ALTER TABLE cash_withdrawals ADD COLUMN IF NOT EXISTS recipient_name TEXT;
+
+-- السماح بحفظ الرصيد الافتتاحي لحاله (بدون باقي حقول الجرد) لقواعد البيانات الموجودة أصلاً
+ALTER TABLE cash_register_audits ALTER COLUMN orders_total DROP NOT NULL;
+ALTER TABLE cash_register_audits ALTER COLUMN withdrawals_total DROP NOT NULL;
+ALTER TABLE cash_register_audits ALTER COLUMN expected_amount DROP NOT NULL;
+ALTER TABLE cash_register_audits ALTER COLUMN actual_amount DROP NOT NULL;
+ALTER TABLE cash_register_audits ALTER COLUMN difference DROP NOT NULL;
