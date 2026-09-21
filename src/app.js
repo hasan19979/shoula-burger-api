@@ -83,6 +83,7 @@ app.use((req, res) => {
 // معالج أخطاء مركزي — أي خطأ بأي route (حتى لو async) بيوصل لهون
 app.use((err, req, res, next) => {
   console.error('❌ خطأ:', err.message);
+  console.error(err.stack);
   if (err.message && err.message.includes('CORS')) {
     return res.status(403).json({ error: err.message });
   }

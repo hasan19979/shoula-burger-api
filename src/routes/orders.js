@@ -13,7 +13,7 @@ const VALID_STATUSES = ['pending', 'accepted', 'preparing', 'ready', 'delivered'
 const VALID_TYPES = ['dine-in', 'delivery', 'takeaway', 'pos'];
 
 function generateOrderNo() {
-  return 'A' + Math.floor(1000 + Math.random() * 9000);
+  return 'A' + Math.floor(100000 + Math.random() * 900000);
 }
 
 // المنطق المشترك بين الطلب العادي (من الموقع) وطلب الكاشير (POS) —
@@ -156,6 +156,9 @@ async function buildAndSaveOrder(client, opts) {
   let orderNo = generateOrderNo();
   let order;
   for (let attempt = 0; attempt < 5; attempt++) {
+    // بنحط نقطة استرجاع قبل كل محاولة — لو المحاولة فشلت (رقم مكرر)، بنرجع لهون بس، مش نلغي كل المعاملة
+    // (بدون هاد، أي فشل بالإدخال كان "يسمّم" المعاملة كاملة، فأي محاولة تانية بعدها كانت تفشل برسالة عامة غامضة)
+    await client.query('SAVEPOINT order_insert_attempt');
     try {
       const orderRes = await client.query(
         `INSERT INTO orders
@@ -165,8 +168,10 @@ async function buildAndSaveOrder(client, opts) {
          tableNumber || null, cashierName || null, orderSource || 'online', kitchenStatus || 'served']
       );
       order = orderRes.rows[0];
+      await client.query('RELEASE SAVEPOINT order_insert_attempt');
       break;
     } catch (err) {
+      await client.query('ROLLBACK TO SAVEPOINT order_insert_attempt');
       if (err.code === '23505') { orderNo = generateOrderNo(); continue; }
       throw err;
     }
@@ -234,7 +239,7 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
   }
-  const validMethods = ['cash', 'card', 'wallet', 'bank-transfer', 'other'];
+  const validMethods = ['cash', 'card', 'wallet', 'bank-transfer', 'other', 'pay-later'];
   if (paymentMethod && !validMethods.includes(paymentMethod)) {
     return res.status(400).json({ error: 'طريقة دفع غير معروفة' });
   }
