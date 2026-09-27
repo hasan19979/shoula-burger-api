@@ -389,3 +389,11 @@ ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_bottom_text TEXT NOT NULL 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_earned INT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_redeemed INT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_balance INT; -- رصيد الزبون بعد هاد الطلب
+
+-- سعر الإضافة (للمكونات الاختيارية) — زي "جبنة إضافية +3". صفر = إضافة مجانية
+ALTER TABLE product_ingredients ADD COLUMN IF NOT EXISTS price NUMERIC(10,2) NOT NULL DEFAULT 0;
+
+-- تعديل الطلبات بعد الطباعة
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS item_meta JSONB; -- تفاصيل الصنف كما انطلب (النوع، الإضافات، المكونات المشالة، الملاحظة) — لإعادة فتحه للتعديل بدقة
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS edited_by TEXT;

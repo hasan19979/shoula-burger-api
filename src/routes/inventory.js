@@ -94,5 +94,29 @@ async function deductForOrderItems(client, orderItems) {
   }
 }
 
+// عكس الخصم — بيرجّع المواد الخام للمخزون (لما ينعدّل طلب ويتغيّر محتواه)
+async function restockForOrderItems(client, orderItems, note) {
+  const additions = new Map();
+  for (const item of orderItems) {
+    if (!item.productId) continue;
+    const { rows: recipe } = await client.query(
+      'SELECT inventory_item_id, quantity FROM recipe_ingredients WHERE product_id = $1',
+      [item.productId]
+    );
+    for (const ing of recipe) {
+      const key = ing.inventory_item_id;
+      additions.set(key, (additions.get(key) || 0) + Number(ing.quantity) * item.quantity);
+    }
+  }
+  for (const [itemId, qty] of additions) {
+    await client.query('UPDATE inventory_items SET quantity = quantity + $1 WHERE id = $2', [qty, itemId]);
+    await client.query(
+      'INSERT INTO stock_movements (inventory_item_id, type, quantity, note) VALUES ($1,$2,$3,$4)',
+      [itemId, 'adjustment', qty, note || 'إرجاع للمخزون بسبب تعديل طلب']
+    );
+  }
+}
+
 module.exports = router;
 module.exports.deductForOrderItems = deductForOrderItems;
+module.exports.restockForOrderItems = restockForOrderItems;

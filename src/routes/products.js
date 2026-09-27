@@ -11,12 +11,12 @@ async function attachIngredients(products, hideForWebsite) {
   const ids = products.map(p => p.id);
 
   const { rows: ingredientRows } = await pool.query(
-    'SELECT product_id, name, default_included FROM product_ingredients WHERE product_id = ANY($1) ORDER BY sort_order',
+    'SELECT product_id, name, default_included, price FROM product_ingredients WHERE product_id = ANY($1) ORDER BY sort_order',
     [ids]
   );
   const ingredientsByProduct = {};
   for (const row of ingredientRows) {
-    (ingredientsByProduct[row.product_id] ||= []).push({ name: row.name, defaultIncluded: row.default_included });
+    (ingredientsByProduct[row.product_id] ||= []).push({ name: row.name, defaultIncluded: row.default_included, price: Number(row.price) });
   }
 
   const { rows: variantRows } = await pool.query(
@@ -120,9 +120,11 @@ router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
         // بيقبل شكلين — نص عادي (توافق مع القديم) أو كائن {name, defaultIncluded}
         const ingName = typeof ing === 'string' ? ing : ing.name;
         const defaultIncluded = typeof ing === 'string' ? true : ing.defaultIncluded !== false;
+        // السعر إله معنى بس للإضافات الاختيارية — المكونات الأساسية دايماً مجانية
+        const price = typeof ing === 'string' || defaultIncluded ? 0 : Math.max(0, Number(ing.price) || 0);
         await client.query(
-          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included) VALUES ($1, $2, $3, $4)',
-          [product.id, ingName, i, defaultIncluded]
+          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included, price) VALUES ($1, $2, $3, $4, $5)',
+          [product.id, ingName, i, defaultIncluded, price]
         );
       }
     }
@@ -182,9 +184,10 @@ router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
         const ing = fields.ingredients[i];
         const ingName = typeof ing === 'string' ? ing : ing.name;
         const defaultIncluded = typeof ing === 'string' ? true : ing.defaultIncluded !== false;
+        const price = typeof ing === 'string' || defaultIncluded ? 0 : Math.max(0, Number(ing.price) || 0);
         await client.query(
-          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included) VALUES ($1, $2, $3, $4)',
-          [id, ingName, i, defaultIncluded]
+          'INSERT INTO product_ingredients (product_id, name, sort_order, default_included, price) VALUES ($1, $2, $3, $4, $5)',
+          [id, ingName, i, defaultIncluded, price]
         );
       }
     }

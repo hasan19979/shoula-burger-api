@@ -4,7 +4,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const requireAuth = require('../middleware/auth');
 const requireStaffAuth = require('../middleware/staffAuth');
 const requireAnyAuth = require('../middleware/anyAuth');
-const { deductForOrderItems } = require('./inventory');
+const { deductForOrderItems, restockForOrderItems } = require('./inventory');
 const { broadcast } = require('../realtime');
 
 const router = express.Router();
@@ -16,14 +16,19 @@ function generateOrderNo() {
   return 'A' + Math.floor(100000 + Math.random() * 900000);
 }
 
-// المنطق المشترك بين الطلب العادي (من الموقع) وطلب الكاشير (POS) —
-// بيحسب الأسعار من قاعدة البيانات دايماً، بغض النظر مين بعت الطلب
-async function buildAndSaveOrder(client, opts) {
-  const {
-    items, customerName, customerPhone, address, orderType, notes, couponCode, status, paymentMethod,
-    chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus
-  } = opts;
+async function insertOrderItems(client, orderId, preparedItems) {
+  for (const item of preparedItems) {
+    await client.query(
+      `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, included_ingredients, line_total, item_meta)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [orderId, item.product_id, item.product_name, item.quantity, item.unit_price, item.included_ingredients, item.line_total, item.item_meta]
+    );
+  }
+}
 
+// تسعير أصناف الطلب من قاعدة البيانات — مشترك بين إنشاء طلب جديد وتعديل طلب موجود،
+// حتى يستحيل يتسعّر الطلب المعدّل بطريقة مختلفة عن الجديد
+async function priceOrderItems(client, items) {
   const productIds = items.map(i => i.productId);
   const { rows: dbProducts } = await client.query(
     `SELECT p.id, p.name, p.price, p.in_stock, COALESCE(c.print_order, 999) AS category_print_order, c.name AS category_name
@@ -57,6 +62,17 @@ async function buildAndSaveOrder(client, opts) {
     variantsById = Object.fromEntries(variantRows.map(v => [v.id, v]));
   }
 
+  // أسعار الإضافات الاختيارية (زي "جبنة إضافية +3") — كمان من قاعدة البيانات دايماً، مش من المتصفح
+  const productIdsForAddons = [...new Set(items.map(i => Number(i.productId)).filter(Boolean))];
+  const addonPriceByKey = {};
+  if (productIdsForAddons.length) {
+    const { rows: addonRows } = await client.query(
+      'SELECT product_id, name, price FROM product_ingredients WHERE product_id = ANY($1) AND default_included = false',
+      [productIdsForAddons]
+    );
+    for (const r of addonRows) addonPriceByKey[`${r.product_id}::${r.name}`] = Number(r.price);
+  }
+
   let subtotal = 0;
   const preparedItems = [];
   for (const item of items) {
@@ -69,7 +85,10 @@ async function buildAndSaveOrder(client, opts) {
     const modifiersUnitPrice = selectedOptions.reduce((sum, o) => sum + Number(o.price), 0);
     const selectedVariant = item.variantId ? variantsById[item.variantId] : null;
     const variantUnitPrice = selectedVariant ? Number(selectedVariant.price_delta) : 0;
-    const unitPrice = Number(product.price) + modifiersUnitPrice + variantUnitPrice;
+    // بنحسب بس الإضافات يلي فعلاً مسجّلة كإضافة اختيارية لهاد الصنف — أي اسم تاني بيتجاهل
+    const addedNames = Array.isArray(item.addedIngredients) ? [...new Set(item.addedIngredients)] : [];
+    const addonsUnitPrice = addedNames.reduce((sum, n) => sum + (addonPriceByKey[`${product.id}::${n}`] || 0), 0);
+    const unitPrice = Number(product.price) + modifiersUnitPrice + variantUnitPrice + addonsUnitPrice;
     const lineTotal = unitPrice * qty;
     subtotal += lineTotal;
 
@@ -86,9 +105,31 @@ async function buildAndSaveOrder(client, opts) {
       included_ingredients: JSON.stringify(includedList),
       line_total: lineTotal,
       print_order: product.category_print_order,
-      category_name: product.category_name
+      category_name: product.category_name,
+      item_meta: JSON.stringify({
+        variantId: selectedVariant ? selectedVariant.id : null,
+        addedIngredients: addedNames,
+        removedIngredients: Array.isArray(item.removedIngredients) ? item.removedIngredients : [],
+        note: typeof item.itemNote === 'string' ? item.itemNote : '',
+        modifierOptionIds: item.modifierOptionIds || [],
+      }),
     });
   }
+
+  return { subtotal, preparedItems };
+}
+
+// المنطق المشترك بين الطلب العادي (من الموقع) وطلب الكاشير (POS) —
+// بيحسب الأسعار من قاعدة البيانات دايماً، بغض النظر مين بعت الطلب
+async function buildAndSaveOrder(client, opts) {
+  const {
+    items, customerName, customerPhone, address, orderType, notes, couponCode, status, paymentMethod,
+    chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus
+  } = opts;
+
+  const priced = await priceOrderItems(client, items);
+  if (priced.error) return priced;
+  const { subtotal, preparedItems } = priced;
 
   let discount = 0;
   let appliedCouponCode = null;
@@ -187,13 +228,7 @@ async function buildAndSaveOrder(client, opts) {
     order = { ...order, ...pointsRes.rows[0] };
   }
 
-  for (const item of preparedItems) {
-    await client.query(
-      `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, included_ingredients, line_total)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [order.id, item.product_id, item.product_name, item.quantity, item.unit_price, item.included_ingredients, item.line_total]
-    );
-  }
+  await insertOrderItems(client, order.id, preparedItems);
 
   // لو الزبون بدون رقم حقيقي أو النظام مطفي، منرجع null (مش صفر) — حتى الفاتورة تخفي قسم النقاط كامل بدل ما تطبع "٠ نقاط"
   return {
@@ -351,6 +386,82 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   }
 
   res.json(orders);
+}));
+
+// PUT /api/orders/:id/items — تعديل طلب جاهز/مطبوع (أي كاشير). الطلب بيضل بنفس الرقم.
+// بيعيد تسعير الأصناف من قاعدة البيانات، بيرجّع المخزون القديم ويخصم الجديد، وبيعدّل نقاط الزبون بالفرق
+router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { items, notes } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'الطلب لازم يضل فيه صنف واحد على الأقل' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: orderRows } = await client.query('SELECT * FROM orders WHERE id = $1 FOR UPDATE', [req.params.id]);
+    const order = orderRows[0];
+    if (!order) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'الطلب مش موجود' }); }
+    if (order.status === 'cancelled') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ما بينفع تعدّلي طلب ملغي' }); }
+
+    const priced = await priceOrderItems(client, items);
+    if (priced.error) { await client.query('ROLLBACK'); return res.status(priced.error.status).json({ error: priced.error.message }); }
+    const { subtotal, preparedItems } = priced;
+
+    // الخصم الأصلي (كوبون + نقاط مستخدمة) بيضل زي ما هو، بس ما بيزيد عن المجموع الجديد. رسوم التوصيل ما بتتغيّر
+    const discount = Math.min(Number(order.discount) || 0, subtotal);
+    const deliveryFee = Number(order.delivery_fee) || 0;
+    const total = subtotal - discount + deliveryFee;
+    const previousTotal = Number(order.total);
+
+    // النقاط: بس لو الطلب الأصلي كان مربوط بنظام النقاط — منعدّل الرصيد بفرق النقاط المكتسبة
+    let pointsEarned = order.points_earned;
+    let pointsBalance = order.points_balance;
+    if (order.points_earned != null && order.customer_phone && order.customer_phone !== '-') {
+      const { rows: st } = await client.query('SELECT loyalty_enabled, loyalty_earn_amount FROM settings WHERE id = 1');
+      const earnAmount = Number(st[0]?.loyalty_earn_amount || 10);
+      const newEarned = st[0]?.loyalty_enabled !== false && earnAmount > 0 ? Math.floor(total / earnAmount) : 0;
+      const delta = newEarned - Number(order.points_earned);
+      const { rows: cust } = await client.query(
+        'UPDATE customers SET loyalty_points = GREATEST(0, loyalty_points + $1) WHERE phone = $2 RETURNING loyalty_points',
+        [delta, order.customer_phone]
+      );
+      pointsEarned = newEarned;
+      pointsBalance = cust[0] ? cust[0].loyalty_points : order.points_balance;
+    }
+
+    // المخزون: منرجّع كل الأصناف القديمة ومنخصم الجديدة
+    const { rows: oldItems } = await client.query('SELECT product_id, quantity FROM order_items WHERE order_id = $1', [order.id]);
+    await restockForOrderItems(client, oldItems.map(i => ({ productId: i.product_id, quantity: i.quantity })), `إرجاع للمخزون — تعديل الطلب ${order.order_no}`);
+    await deductForOrderItems(client, items);
+
+    await client.query('DELETE FROM order_items WHERE order_id = $1', [order.id]);
+    await insertOrderItems(client, order.id, preparedItems);
+
+    const editedBy = req.staff?.name || null;
+    const { rows: updatedRows } = await client.query(
+      `UPDATE orders SET subtotal = $1, discount = $2, total = $3, notes = COALESCE($4, notes),
+         points_earned = $5, points_balance = $6, edited_at = now(), edited_by = $7
+       WHERE id = $8 RETURNING *`,
+      [subtotal, discount, total, typeof notes === 'string' ? notes : null, pointsEarned, pointsBalance, editedBy, order.id]
+    );
+    await client.query('COMMIT');
+
+    const itemsRes = await pool.query(
+      `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order, c.name AS category_name
+       FROM order_items oi
+       LEFT JOIN products p ON p.id = oi.product_id
+       LEFT JOIN categories c ON c.id = p.category_id
+       WHERE oi.order_id = $1 ORDER BY oi.id`,
+      [order.id]
+    );
+    const updated = { ...updatedRows[0], items: itemsRes.rows, previous_total: previousTotal };
+    broadcast('print-order', updated); // جهاز الطباعة بيطبع النسخة المعدّلة للمطبخ
+    res.json(updated);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }));
 
 // GET /api/orders/:id — محمي، مع تفاصيل الأصناف
