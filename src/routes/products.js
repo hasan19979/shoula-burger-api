@@ -6,7 +6,7 @@ const requireAnyAuth = require('../middleware/anyAuth');
 
 const router = express.Router();
 
-async function attachIngredients(products) {
+async function attachIngredients(products, hideForWebsite) {
   if (products.length === 0) return products;
   const ids = products.map(p => p.id);
 
@@ -20,14 +20,15 @@ async function attachIngredients(products) {
   }
 
   const { rows: variantRows } = await pool.query(
-    'SELECT id, product_id, name, description, price_delta, is_default FROM product_variants WHERE product_id = ANY($1) ORDER BY sort_order',
+    'SELECT id, product_id, name, description, price_delta, is_default, hidden_from_website FROM product_variants WHERE product_id = ANY($1) ORDER BY sort_order',
     [ids]
   );
   const variantsByProduct = {};
   for (const row of variantRows) {
+    if (hideForWebsite && row.hidden_from_website) continue; // خيار مخصص للكاشير بس — ما بيوصل لموقع الطلبات
     (variantsByProduct[row.product_id] ||= []).push({
       id: row.id, name: row.name, description: row.description,
-      priceDelta: Number(row.price_delta), isDefault: row.is_default,
+      priceDelta: Number(row.price_delta), isDefault: row.is_default, hiddenFromWebsite: row.hidden_from_website,
     });
   }
 
@@ -71,7 +72,8 @@ router.get('/', asyncHandler(async (req, res) => {
   sql += ' ORDER BY p.sort_order, p.id';
 
   const result = await pool.query(sql, params);
-  const withIngredients = await attachIngredients(result.rows);
+  const hideForWebsite = req.query.channel === 'website';
+  const withIngredients = await attachIngredients(result.rows, hideForWebsite);
   res.json(withIngredients);
 }));
 
@@ -128,8 +130,8 @@ router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
       for (let i = 0; i < variants.length; i++) {
         const v = variants[i];
         await client.query(
-          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, sort_order) VALUES ($1,$2,$3,$4,$5,$6)',
-          [product.id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, i]
+          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, hidden_from_website, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [product.id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, !!v.hiddenFromWebsite, i]
         );
       }
     }
@@ -192,8 +194,8 @@ router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
       for (let i = 0; i < fields.variants.length; i++) {
         const v = fields.variants[i];
         await client.query(
-          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, sort_order) VALUES ($1,$2,$3,$4,$5,$6)',
-          [id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, i]
+          'INSERT INTO product_variants (product_id, name, description, price_delta, is_default, hidden_from_website, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [id, v.name, v.description || '', v.priceDelta || 0, !!v.isDefault, !!v.hiddenFromWebsite, i]
         );
       }
     }

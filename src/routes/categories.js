@@ -1,7 +1,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
-const requireAuth = require('../middleware/auth');
+const requireAnyAuth = require('../middleware/anyAuth');
 
 const router = express.Router();
 
@@ -14,7 +14,7 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/categories — محمي، لوحة التحكم بس
-router.post('/', requireAuth, asyncHandler(async (req, res) => {
+router.post('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { slug, name, icon, sort_order, print_order } = req.body || {};
   if (!slug || !name) return res.status(400).json({ error: 'المعرف (slug) والاسم مطلوبين' });
   if (!SLUG_RE.test(slug)) return res.status(400).json({ error: 'المعرف لازم يكون أحرف إنجليزية صغيرة وأرقام وشرطات بس' });
@@ -27,7 +27,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // PUT /api/categories/:id — محمي
-router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.put('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { name, icon, sort_order, print_order } = req.body || {};
   const result = await pool.query(
@@ -40,7 +40,7 @@ router.put('/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/categories/:id — محمي، بيرفض الحذف لو في منتجات مرتبطة (RESTRICT بقاعدة البيانات)
-router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
+router.delete('/:id', requireAnyAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query('DELETE FROM categories WHERE id = $1 RETURNING id', [id]);

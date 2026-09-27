@@ -178,6 +178,15 @@ async function buildAndSaveOrder(client, opts) {
   }
   if (!order) throw new Error('تعذّر إنشاء رقم طلب فريد');
 
+  // منخزّن النقاط على الطلب نفسه — حتى أي طباعة لاحقة (المطبخ، إعادة الطباعة) تعرضها صح
+  if (loyaltyActive) {
+    const pointsRes = await client.query(
+      'UPDATE orders SET points_earned = $1, points_redeemed = $2, points_balance = $3 WHERE id = $4 RETURNING points_earned, points_redeemed, points_balance',
+      [pointsEarned, redeemedPoints, newPointsBalance, order.id]
+    );
+    order = { ...order, ...pointsRes.rows[0] };
+  }
+
   for (const item of preparedItems) {
     await client.query(
       `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, included_ingredients, line_total)
@@ -186,7 +195,16 @@ async function buildAndSaveOrder(client, opts) {
     );
   }
 
-  return { order: { ...order, items: preparedItems, points_earned: pointsEarned, points_redeemed: redeemedPoints, points_balance: newPointsBalance } };
+  // لو الزبون بدون رقم حقيقي أو النظام مطفي، منرجع null (مش صفر) — حتى الفاتورة تخفي قسم النقاط كامل بدل ما تطبع "٠ نقاط"
+  return {
+    order: {
+      ...order,
+      items: preparedItems,
+      points_earned: loyaltyActive ? pointsEarned : null,
+      points_redeemed: loyaltyActive ? redeemedPoints : null,
+      points_balance: loyaltyActive ? newPointsBalance : null,
+    },
+  };
 }
 
 // POST /api/orders — عام (الموقع نفسه بيبعت هون). بنحسب الأسعار من قاعدة البيانات، مش من اللي بعته المتصفح،

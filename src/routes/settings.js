@@ -10,7 +10,9 @@ const ALLOWED_FIELDS = [
   'open_time','close_time','whatsapp_number','maps_url','currency',
   'delivery_fee','min_order',
   'receipt_item_font_size','receipt_col_qty_width','receipt_col_price_width','receipt_col_total_width',
-  'loyalty_enabled','loyalty_earn_amount','loyalty_redeem_value'
+  'loyalty_enabled','loyalty_earn_amount','loyalty_redeem_value',
+  'receipt_header_slogan_image','receipt_header_lines','receipt_subtitle_delivery','receipt_subtitle_takeaway',
+  'receipt_subtitle_dinein','receipt_qr_image','receipt_thanks_text','receipt_bottom_text'
 ];
 
 // GET /api/settings — عام، الموقع بيقرا منه مباشرة

@@ -45,11 +45,46 @@ router.get('/:id/favorite-items', requireAnyAuth, requireManagementLevel, asyncH
 }));
 
 // GET /api/customers/lookup?phone=... — عام لأي موظف كاشير، لعرض رصيد النقاط وقت الدفع
+// آخر عنوان استخدمه الزبون بطلب مش ملغي — لتعبئة العنوان تلقائياً
+const LAST_ADDRESS_SQL = `(SELECT o.address FROM orders o
+  WHERE o.customer_phone = c.phone AND o.address IS NOT NULL AND o.address != '' AND o.status != 'cancelled'
+  ORDER BY o.created_at DESC LIMIT 1) AS last_address`;
+
 router.get('/lookup', requireStaffAuth, asyncHandler(async (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: 'رقم الجوال مطلوب' });
-  const { rows } = await pool.query('SELECT name, phone, loyalty_points FROM customers WHERE phone = $1', [phone]);
+  const { rows } = await pool.query(`SELECT c.name, c.phone, c.loyalty_points, ${LAST_ADDRESS_SQL} FROM customers c WHERE c.phone = $1`, [phone]);
   res.json(rows[0] || null);
+}));
+
+// GET /api/customers/search?q=... — بحث بالاسم أو جزء من رقم الجوال (للكاشير وقت الدفع)
+// الحساب نفسه مربوط دايماً برقم الجوال (الأسماء بتتكرر)، بس البحث بيسهّل إيجاده بالاسم
+// by=phone: اقتراحات أثناء كتابة الرقم (يلي بيبلش بنفس الأرقام أول) | by=name: بحث بالاسم
+router.get('/search', requireStaffAuth, asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const by = req.query.by === 'phone' ? 'phone' : req.query.by === 'name' ? 'name' : 'any';
+  if (q.length < 2) return res.json([]);
+  let where;
+  let order;
+  if (by === 'phone') {
+    where = `c.phone LIKE $1`;
+    order = `(c.phone LIKE $2) DESC, c.phone`; // الأرقام يلي بتبلش بنفس الأرقام المكتوبة أول
+  } else if (by === 'name') {
+    where = `c.name ILIKE $1`;
+    order = `(c.name ILIKE $2) DESC, c.name`; // الأسماء يلي بتبلش بنفس الكلمة أول
+  } else {
+    where = `(c.name ILIKE $1 OR c.phone LIKE $1)`;
+    order = `(c.name ILIKE $2 OR c.phone LIKE $2) DESC, c.name`;
+  }
+  const { rows } = await pool.query(
+    `SELECT c.name, c.phone, c.loyalty_points, ${LAST_ADDRESS_SQL}
+     FROM customers c
+     WHERE c.phone != '-' AND ${where}
+     ORDER BY ${order}
+     LIMIT 8`,
+    [`%${q}%`, `${q}%`]
+  );
+  res.json(rows);
 }));
 
 // GET /api/customers/address-history?phone=... — عام (بدون تسجيل دخول)، لموقع الطلب العام:

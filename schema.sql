@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
   description TEXT NOT NULL DEFAULT '',
   price_delta NUMERIC(10,2) NOT NULL DEFAULT 0, -- فرق السعر عن السعر الأساسي للصنف (٠ للخيار الافتراضي عادةً)
   is_default BOOLEAN NOT NULL DEFAULT false,
+  hidden_from_website BOOLEAN NOT NULL DEFAULT false, -- يظهر بالكاشير بس، مخفي عن موقع الطلبات
   sort_order INT NOT NULL DEFAULT 0
 );
 
@@ -369,3 +370,22 @@ ALTER TABLE cash_register_audits ALTER COLUMN withdrawals_total DROP NOT NULL;
 ALTER TABLE cash_register_audits ALTER COLUMN expected_amount DROP NOT NULL;
 ALTER TABLE cash_register_audits ALTER COLUMN actual_amount DROP NOT NULL;
 ALTER TABLE cash_register_audits ALTER COLUMN difference DROP NOT NULL;
+
+-- خيار نوع/حجم يظهر بالكاشير بس، ومخفي عن موقع الطلبات (زي "دبل" لو بدك تبيعيها بالمحل بس)
+ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS hidden_from_website BOOLEAN NOT NULL DEFAULT false;
+
+-- عناصر تصميم الفاتورة المطبوعة (قابلة للتعديل من الإعدادات)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_header_slogan_image TEXT NOT NULL DEFAULT ''; -- صورة جملة مزخرفة بأعلى الفاتورة (جنب الشعار)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_header_lines TEXT NOT NULL DEFAULT ''; -- أسطر قصيرة تحت الجملة (كل سطر لحاله)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_delivery TEXT NOT NULL DEFAULT 'نصلك أينما كنت';
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_takeaway TEXT NOT NULL DEFAULT 'جاهز للاستلام';
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_dinein TEXT NOT NULL DEFAULT 'صحتين وعافية';
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_qr_image TEXT NOT NULL DEFAULT ''; -- صورة رمز QR بالتذييل
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_thanks_text TEXT NOT NULL DEFAULT 'شكراً لثقتكم وتشجيعكم';
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_bottom_text TEXT NOT NULL DEFAULT ''; -- سطر أخير بآخر الفاتورة
+
+-- نقاط الولاء لكل طلب — حتى تنطبع صح بكل نسخ الفاتورة (حتى إعادة الطباعة بعدين من شاشة الطلبات)
+-- فاضية (NULL) للطلبات بدون رقم زبون أو لما نظام النقاط مطفي
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_earned INT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_redeemed INT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_balance INT; -- رصيد الزبون بعد هاد الطلب
