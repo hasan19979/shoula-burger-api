@@ -28,7 +28,8 @@ async function insertOrderItems(client, orderId, preparedItems) {
 
 // تسعير أصناف الطلب من قاعدة البيانات — مشترك بين إنشاء طلب جديد وتعديل طلب موجود،
 // حتى يستحيل يتسعّر الطلب المعدّل بطريقة مختلفة عن الجديد
-async function priceOrderItems(client, items) {
+// allowPriceOverride: الكاشير بس (طلب من الكاشير أو تعديل طلب) — طلبات الموقع ما بتقدر تغيّر السعر أبداً
+async function priceOrderItems(client, items, { allowPriceOverride = false } = {}) {
   const productIds = items.map(i => i.productId);
   const { rows: dbProducts } = await client.query(
     `SELECT p.id, p.name, p.price, p.in_stock, COALESCE(c.print_order, 999) AS category_print_order, c.name AS category_name
@@ -88,7 +89,17 @@ async function priceOrderItems(client, items) {
     // بنحسب بس الإضافات يلي فعلاً مسجّلة كإضافة اختيارية لهاد الصنف — أي اسم تاني بيتجاهل
     const addedNames = Array.isArray(item.addedIngredients) ? [...new Set(item.addedIngredients)] : [];
     const addonsUnitPrice = addedNames.reduce((sum, n) => sum + (addonPriceByKey[`${product.id}::${n}`] || 0), 0);
-    const unitPrice = Number(product.price) + modifiersUnitPrice + variantUnitPrice + addonsUnitPrice;
+    const catalogUnitPrice = Number(product.price) + modifiersUnitPrice + variantUnitPrice + addonsUnitPrice;
+    // سعر معدّل لحظياً من الكاشير لهاد السطر بس — بنحفظ السعر الأصلي جنبه حتى يضل واضح بالسجل
+    const overrideRaw = item.unitPriceOverride;
+    const hasOverride = allowPriceOverride && overrideRaw !== undefined && overrideRaw !== null && overrideRaw !== '';
+    if (hasOverride) {
+      const v = Number(overrideRaw);
+      if (!Number.isFinite(v) || v < 0 || v > 100000) {
+        return { error: { status: 400, message: `سعر غير صالح للصنف "${product.name}"` } };
+      }
+    }
+    const unitPrice = hasOverride ? Math.round(Number(overrideRaw) * 100) / 100 : catalogUnitPrice;
     const lineTotal = unitPrice * qty;
     subtotal += lineTotal;
 
@@ -112,6 +123,7 @@ async function priceOrderItems(client, items) {
         removedIngredients: Array.isArray(item.removedIngredients) ? item.removedIngredients : [],
         note: typeof item.itemNote === 'string' ? item.itemNote : '',
         modifierOptionIds: item.modifierOptionIds || [],
+        ...(hasOverride ? { priceOverride: unitPrice, originalUnitPrice: catalogUnitPrice } : {}),
       }),
     });
   }
@@ -127,7 +139,7 @@ async function buildAndSaveOrder(client, opts) {
     chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus
   } = opts;
 
-  const priced = await priceOrderItems(client, items);
+  const priced = await priceOrderItems(client, items, { allowPriceOverride: orderSource === 'pos' });
   if (priced.error) return priced;
   const { subtotal, preparedItems } = priced;
 
@@ -153,8 +165,9 @@ async function buildAndSaveOrder(client, opts) {
     await client.query('UPDATE coupons SET used_count = used_count + 1 WHERE id = $1', [coupon.id]);
   }
 
-  const { rows: settingsRows } = await client.query('SELECT delivery_fee, min_order, loyalty_enabled, loyalty_earn_amount, loyalty_redeem_value FROM settings WHERE id = 1');
-  const deliveryFee = chargeDeliveryFee ? Number(settingsRows[0]?.delivery_fee || 0) : 0;
+  const { rows: settingsRows } = await client.query('SELECT min_order, loyalty_enabled, loyalty_earn_amount, loyalty_redeem_value FROM settings WHERE id = 1');
+  // المطعم ما بياخد رسوم توصيل إطلاقاً — المجموع الكلي = المجموع الفرعي (ناقص الخصم بس)، مهما كانت القيمة القديمة المخزنة بالإعدادات
+  const deliveryFee = 0;
   const minOrder = Number(settingsRows[0]?.min_order || 0);
   const loyaltyEnabled = settingsRows[0]?.loyalty_enabled !== false;
   const loyaltyEarnAmount = Number(settingsRows[0]?.loyalty_earn_amount || 10);
@@ -287,7 +300,7 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة أو توصيل هاتفي). بيخصم المخزون تلقائياً حسب الوصفات
 router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, address, notes, couponCode, paymentMethod, tableNumber, orderType, kitchenStatus, redeemPoints } = req.body || {};
+  const { items, customerName, customerPhone, address, notes, couponCode, paymentMethod, tableNumber, orderType, kitchenStatus, redeemPoints, amountPaid } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -322,6 +335,13 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
       kitchenStatus: kitchenStatus || 'served'
     });
     if (result.error) { await client.query('ROLLBACK'); return res.status(result.error.status).json({ error: result.error.message }); }
+
+    // المبلغ المدفوع فعلياً — بينحفظ حتى إعادة الطباعة تطلع زي الفاتورة الأصلية بالضبط (المدفوع والباقي)
+    const paid = Number(amountPaid);
+    if (Number.isFinite(paid) && paid > 0) {
+      await client.query('UPDATE orders SET amount_paid = $1 WHERE id = $2', [paid, result.order.id]);
+      result.order.amount_paid = paid.toFixed(2);
+    }
 
     await deductForOrderItems(client, items);
 
@@ -402,13 +422,14 @@ router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
     if (!order) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'الطلب مش موجود' }); }
     if (order.status === 'cancelled') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ما بينفع تعدّلي طلب ملغي' }); }
 
-    const priced = await priceOrderItems(client, items);
+    const priced = await priceOrderItems(client, items, { allowPriceOverride: true });
     if (priced.error) { await client.query('ROLLBACK'); return res.status(priced.error.status).json({ error: priced.error.message }); }
     const { subtotal, preparedItems } = priced;
 
     // الخصم الأصلي (كوبون + نقاط مستخدمة) بيضل زي ما هو، بس ما بيزيد عن المجموع الجديد. رسوم التوصيل ما بتتغيّر
     const discount = Math.min(Number(order.discount) || 0, subtotal);
-    const deliveryFee = Number(order.delivery_fee) || 0;
+    // بدون رسوم توصيل — حتى لو الطلب القديم كان عليه رسوم، بعد التعديل بتنشال
+    const deliveryFee = 0;
     const total = subtotal - discount + deliveryFee;
     const previousTotal = Number(order.total);
 
@@ -438,7 +459,7 @@ router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
 
     const editedBy = req.staff?.name || null;
     const { rows: updatedRows } = await client.query(
-      `UPDATE orders SET subtotal = $1, discount = $2, total = $3, notes = COALESCE($4, notes),
+      `UPDATE orders SET subtotal = $1, discount = $2, total = $3, delivery_fee = 0, notes = COALESCE($4, notes),
          points_earned = $5, points_balance = $6, edited_at = now(), edited_by = $7
        WHERE id = $8 RETURNING *`,
       [subtotal, discount, total, typeof notes === 'string' ? notes : null, pointsEarned, pointsBalance, editedBy, order.id]
@@ -462,6 +483,23 @@ router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
   } finally {
     client.release();
   }
+}));
+
+// POST /api/orders/:id/reprint — إعادة طباعة طلب سابق عن طريق جهاز الطباعة نفسه (مش الجهاز يلي كبس الزر)،
+// حتى تطلع الفاتورة بنفس الحجم والإعدادات بالضبط زي الطباعة العادية
+router.post('/:id/reprint', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM orders WHERE id = $1', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'الطلب مش موجود' });
+  const itemsRes = await pool.query(
+    `SELECT oi.*, COALESCE(c.print_order, 999) AS print_order, c.name AS category_name
+     FROM order_items oi
+     LEFT JOIN products p ON p.id = oi.product_id
+     LEFT JOIN categories c ON c.id = p.category_id
+     WHERE oi.order_id = $1 ORDER BY oi.id`,
+    [req.params.id]
+  );
+  broadcast('print-order', { ...rows[0], items: itemsRes.rows });
+  res.json({ success: true });
 }));
 
 // GET /api/orders/:id — محمي، مع تفاصيل الأصناف

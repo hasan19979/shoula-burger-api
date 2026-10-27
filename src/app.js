@@ -74,6 +74,7 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/withdrawals', withdrawalsRoutes);
 app.use('/api/cash-audit', cashAuditRoutes);
+app.use('/api/admin', require('./routes/admin'));
 
 // أي مسار مش موجود
 app.use((req, res) => {

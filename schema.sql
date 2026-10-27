@@ -397,3 +397,20 @@ ALTER TABLE product_ingredients ADD COLUMN IF NOT EXISTS price NUMERIC(10,2) NOT
 ALTER TABLE order_items ADD COLUMN IF NOT EXISTS item_meta JSONB; -- تفاصيل الصنف كما انطلب (النوع، الإضافات، المكونات المشالة، الملاحظة) — لإعادة فتحه للتعديل بدقة
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS edited_by TEXT;
+
+-- المبلغ يلي دفعه الزبون فعلياً (نقدي) — حتى إعادة طباعة الفاتورة تعرض "المدفوع / الباقي" زي الأصلية
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount_paid NUMERIC(10,2);
+
+-- إعدادات موسّعة لطباعة الفاتورة (كلها قابلة للتعديل من الإعدادات). الأحجام بالبكسل، والأبعاد بالمليمتر على تصميم 56مم
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_notes_font_size INT NOT NULL DEFAULT 10;          -- خط ملاحظات الصنف
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_table_number_font_size INT NOT NULL DEFAULT 12;   -- خط أرقام الجدول (السعر والمجموع)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_order_number_font_size INT NOT NULL DEFAULT 15;   -- خط رقم الطلب
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_customer_font_size INT NOT NULL DEFAULT 14;       -- خط الهاتف والعنوان
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_total_font_size INT NOT NULL DEFAULT 13;          -- خط المجموع الكلي
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_logo_size INT NOT NULL DEFAULT 24;                -- حجم الشعار
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_qr_size INT NOT NULL DEFAULT 18;                  -- حجم رمز QR
+
+-- ضبط ذكي لاسم الصنف بالفاتورة (سطر واحد لو بيتسع، وإلا سطرين، والكلمة ما بتنقسم)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_name_autofit BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_name_min_font_size INT NOT NULL DEFAULT 11; -- أقل حجم خط بيصغّر لإله الضبط الذكي
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_show_item_icon BOOLEAN NOT NULL DEFAULT true; -- أيقونة بجانب اسم الصنف (بتاخد حوالي 5مم)
