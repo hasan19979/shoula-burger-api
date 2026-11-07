@@ -13,7 +13,7 @@ const router = express.Router();
  * الأصناف والتصنيفات والموظفين والإعدادات ما بتنمسح من هون أبداً (النظام ما بيشتغل بدونها).
  */
 const TARGETS = {
-  sales: { label: 'المبيعات (الطلبات)', tables: ['order_items', 'orders'] },
+  sales: { label: 'المبيعات (الطلبات)', tables: ['order_counters', 'order_items', 'orders'] }, // ومعها عدّاد الأرقام اليومي — بيرجع يبلّش من 001
   customers: { label: 'العملاء ونقاطهم', tables: ['customers'] },
   suppliers: { label: 'الموردين', tables: ['suppliers'] },
   withdrawals: { label: 'السحوبات', tables: ['cash_withdrawals'] },

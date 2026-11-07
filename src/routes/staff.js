@@ -4,6 +4,9 @@ const jwt = require('jsonwebtoken');
 const pool = require('../db/pool');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAnyAuth = require('../middleware/anyAuth');
+const requireStaffAuth = require('../middleware/staffAuth');
+const { requireStaffRole } = requireStaffAuth;
+const sessions = require('../sessions');
 
 const router = express.Router();
 
@@ -17,22 +20,58 @@ function requireManagementLevel(req, res, next) {
 
 // POST /api/staff/login — عام: تسجيل دخول موظف الكاشير برمز PIN (4 أرقام)، بيرجع رمز دخول (JWT) قصير الأمد
 router.post('/login', asyncHandler(async (req, res) => {
-  const { pin } = req.body || {};
+  const { pin, deviceId, deviceName, force } = req.body || {};
   if (!pin) return res.status(400).json({ error: 'الرمز السري مطلوب' });
 
   const { rows } = await pool.query('SELECT * FROM staff_users WHERE active = true');
   for (const staff of rows) {
     if (await bcrypt.compare(String(pin), staff.pin_hash)) {
-      const token = jwt.sign(
-        { staffId: staff.id, role: staff.role, name: staff.name },
-        process.env.JWT_SECRET,
-        { expiresIn: '12h' } // شفت عمل عادي — مو 7 أيام زي حساب المالك، بأمان أكتر لجهاز كاشير مشترك
-      );
-      return res.json({ token, staff: { id: staff.id, name: staff.name, role: staff.role } });
+      const canForce = ['admin', 'manager'].includes(staff.role);
+      // الحساب مفتوح على جهاز تاني: الكاشير بينرفض، والمدير بيقدر يسكّر الجهاز التاني ويدخل
+      const result = sessions.openSession(staff, {
+        deviceId: deviceId ? String(deviceId).slice(0, 64) : null,
+        deviceName: deviceName ? String(deviceName).slice(0, 60) : null,
+        force: !!force && canForce,
+      });
+      if (!result.ok) {
+        return res.status(409).json({
+          error: canForce
+            ? 'هاد الحساب مفتوح على جهاز تاني. بدك تسكّريه وتدخلي هون؟'
+            : 'هاد الحساب مفتوح على جهاز تاني. سكّريه من هناك أو اطلبي من المدير يسكّره.',
+          code: 'SESSION_ACTIVE',
+          canForce,
+          deviceName: result.conflict.deviceName,
+          since: result.conflict.since,
+        });
+      }
+      return res.json({ token: result.token, staff: { id: staff.id, name: staff.name, role: staff.role } });
     }
   }
   res.status(401).json({ error: 'رمز غير صحيح' });
 }));
+
+// POST /api/staff/refresh — تجديد رمز الدخول قبل ما يخلص (بدون قاعدة البيانات — توقيع جديد لنفس الجلسة)
+router.post('/refresh', requireStaffAuth, (req, res) => {
+  const s = req.staff;
+  const token = sessions.signToken({ id: s.staffId, role: s.role, name: s.name }, s.sid, s.did);
+  res.json({ token });
+});
+
+// POST /api/staff/logout — تسجيل خروج: بيسكّر الجلسة فوراً (حتى يقدر يدخل من جهاز تاني بدون انتظار)
+router.post('/logout', requireStaffAuth, (req, res) => {
+  sessions.closeSession(req.staff);
+  res.json({ ok: true });
+});
+
+// GET /api/staff/sessions — المدير: مين داخل هلق وعلى أي جهاز
+router.get('/sessions', requireStaffAuth, requireStaffRole('admin', 'manager'), (req, res) => {
+  res.json(sessions.listSessions());
+});
+
+// POST /api/staff/sessions/:staffId/end — المدير: إنهاء جلسة موظف (الجهاز بيطلع لشاشة الرمز فوراً)
+router.post('/sessions/:staffId/end', requireStaffAuth, requireStaffRole('admin', 'manager'), (req, res) => {
+  res.json({ ok: sessions.endSession(req.params.staffId) });
+});
 
 // GET /api/staff — محمي (لوحة التحكم بس): قائمة الموظفين، بدون كشف الـ PIN المشفّر
 router.get('/', requireAnyAuth, requireManagementLevel, asyncHandler(async (req, res) => {

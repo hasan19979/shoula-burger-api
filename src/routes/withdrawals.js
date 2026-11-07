@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db/pool');
+const businessDay = require('../businessDay');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAnyAuth = require('../middleware/anyAuth');
 
@@ -10,13 +11,18 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   const { from, to, recipientType, recipientId } = req.query;
   const conditions = [];
   const params = [];
-  if (from) {
-    params.push(`${from} 00:00:00`);
-    conditions.push(`created_at >= $${params.length}`);
-  }
-  if (to) {
-    params.push(`${to} 23:59:59`);
-    conditions.push(`created_at <= $${params.length}`);
+  // أيام عمل (لحد انتهاء الدوام، بتوقيت المطعم) — مش أيام بتوقيت السيرفر
+  const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d));
+  if (from || to) {
+    const cutoff = await businessDay.getCutoff();
+    if (from && isDate(from)) {
+      params.push(from, cutoff, businessDay.TZ);
+      conditions.push(`created_at >= (($${params.length - 2}::date + make_interval(mins => $${params.length - 1})) AT TIME ZONE $${params.length})`);
+    }
+    if (to && isDate(to)) {
+      params.push(to, cutoff, businessDay.TZ);
+      conditions.push(`created_at < (($${params.length - 2}::date + 1 + make_interval(mins => $${params.length - 1})) AT TIME ZONE $${params.length})`);
+    }
   }
   if (recipientType) {
     params.push(recipientType);

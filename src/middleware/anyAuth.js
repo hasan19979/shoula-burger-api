@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const sessions = require('../sessions');
 
 /** بتسمح بأي وحدة من الاثنين: تسجيل دخول لوحة التحكم (إيميل/كلمة سر) أو تسجيل دخول الكاشير (PIN) */
 function requireAnyAuth(req, res, next) {
@@ -12,13 +13,16 @@ function requireAnyAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     if (payload.staffId) {
+      if (sessions.checkToken(payload) === 'replaced') {
+        return res.status(401).json({ error: 'حسابك انفتح على جهاز تاني، فانسكّرت الجلسة هون', code: 'SESSION_REPLACED' });
+      }
       req.staff = payload;
     } else {
       req.admin = payload;
     }
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'رمز الدخول غير صالح أو منتهي، سجّلي دخول من جديد' });
+    return res.status(401).json({ error: 'رمز الدخول غير صالح أو منتهي، سجّلي دخول من جديد', code: 'SESSION_EXPIRED' });
   }
 }
 

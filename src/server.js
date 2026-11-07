@@ -1,6 +1,7 @@
 const http = require('http');
 const app = require('./app');
 const { initRealtime } = require('./realtime');
+const autoMigrate = require('./db/autoMigrate');
 
 if (!process.env.JWT_SECRET) {
   console.error('❌ متغير JWT_SECRET مش موجود بملف .env — لازم تحطي نص سري طويل حتى يشتغل تسجيل الدخول.');
@@ -14,6 +15,12 @@ const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
 initRealtime(server);
 
-server.listen(PORT, () => {
-  console.log(`🚀 السيرفر شغال على البورت ${PORT} (مع اتصال لحظي Socket.IO)`);
-});
+// منحدّث قاعدة البيانات أول (أعمدة/جداول جديدة) وبعدين منشغّل السيرفر —
+// لو التحديث فشل منكمّل نشغّل، حتى ما يوقف الموقع كله بسبب عمود ناقص
+autoMigrate()
+  .catch((err) => console.error('⚠️ التحديث التلقائي لقاعدة البيانات فشل:', err.message))
+  .finally(() => {
+    server.listen(PORT, () => {
+      console.log(`🚀 السيرفر شغال على البورت ${PORT} (مع اتصال لحظي Socket.IO)`);
+    });
+  });

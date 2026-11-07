@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db/pool');
+const businessDay = require('../businessDay');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAnyAuth = require('../middleware/anyAuth');
 
@@ -12,7 +13,7 @@ const ALLOWED_FIELDS = [
   'receipt_item_font_size','receipt_col_qty_width','receipt_col_price_width','receipt_col_total_width',
   'loyalty_enabled','loyalty_earn_amount','loyalty_redeem_value',
   'receipt_header_slogan_image','receipt_header_lines','receipt_subtitle_delivery','receipt_subtitle_takeaway',
-  'receipt_subtitle_dinein','receipt_qr_image','receipt_thanks_text','receipt_bottom_text',
+  'receipt_subtitle_dinein','receipt_qr_image','receipt_qr_url','receipt_thanks_text','receipt_bottom_text',
   'receipt_notes_font_size','receipt_table_number_font_size','receipt_order_number_font_size',
   'receipt_customer_font_size','receipt_total_font_size','receipt_logo_size','receipt_qr_size',
   'receipt_name_autofit','receipt_name_min_font_size','receipt_show_item_icon'
@@ -57,6 +58,7 @@ router.put('/', requireAnyAuth, asyncHandler(async (req, res) => {
   sets.push('updated_at = now()');
 
   const result = await pool.query(`UPDATE settings SET ${sets.join(', ')} WHERE id = 1 RETURNING *`, params);
+  businessDay.invalidate(); // ساعات الدوام ممكن تكون تغيّرت — يوم العمل بيتحسب من جديد
   res.json(result.rows[0]);
 }));
 

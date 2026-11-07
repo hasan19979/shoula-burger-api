@@ -1,4 +1,5 @@
 const { Server } = require('socket.io');
+const sessions = require('./sessions');
 
 let io = null;
 
@@ -12,9 +13,19 @@ function initRealtime(httpServer) {
     },
   });
 
+  sessions.attachIo(io);
+
   io.on('connection', (socket) => {
     console.log(`🔌 اتصال لحظي جديد (${socket.id})`);
-    socket.on('disconnect', () => console.log(`🔌 انقطع اتصال (${socket.id})`));
+    // جهاز الكاشير بيبلّغ مين داخل عليه — حتى نعرف إنه الجلسة لسا مفتوحة (بالذاكرة بس)
+    socket.on('staff-session', (msg) => {
+      if (msg && typeof msg.token === 'string') sessions.bindSocket(socket, msg.token, msg.deviceName);
+    });
+    socket.on('staff-session-end', () => sessions.unbindSocket(socket));
+    socket.on('disconnect', () => {
+      sessions.unbindSocket(socket);
+      console.log(`🔌 انقطع اتصال (${socket.id})`);
+    });
   });
 
   return io;

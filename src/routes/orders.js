@@ -12,8 +12,28 @@ const router = express.Router();
 const VALID_STATUSES = ['pending', 'accepted', 'preparing', 'ready', 'delivered', 'cancelled'];
 const VALID_TYPES = ['dine-in', 'delivery', 'takeaway', 'pos'];
 
-function generateOrderNo() {
-  return 'A' + Math.floor(100000 + Math.random() * 900000);
+/**
+ * رقم الطلب: تاريخ اليوم + رقم متسلسل لهاد اليوم — مثلاً 1106-023 = ٦ نوفمبر، الطلب رقم 23.
+ * اليوم = يوم العمل حسب توقيت المطعم وساعات الدوام (مش توقيت السيرفر ولا نص الليل)، وبيبلّش من 001 كل يوم.
+ * العدّاد بنفس معاملة حفظ الطلب: لو الحفظ فشل، العدّاد بيرجع معه — فما في أرقام ناقصة.
+ * طلب بدون نت بياخد رقم من يوم البيعة الحقيقي (مش يوم الإرسال).
+ */
+const businessDay = require('../businessDay');
+async function nextOrderNo(client, createdAt) {
+  // يوم العمل: بيخلص مع انتهاء الدوام (من الإعدادات) — طلب بعد نص الليل وقبل الفتحة الجاية بيتبع يوم امبارح
+  const cutoff = await businessDay.getCutoff();
+  // العدّاد ما بينزل أبداً تحت أعلى رقم موجود فعلاً لهاد اليوم (احتياط لو العدّاد انمسح أو انعمل بنسخة قديمة)
+  const { rows } = await client.query(
+    `WITH d AS (SELECT (((COALESCE($1::timestamptz, now()) AT TIME ZONE $2) - make_interval(mins => $3))::date) AS day),
+          m AS (SELECT COALESCE(MAX(daily_seq), 0) AS mx FROM orders, d WHERE orders.order_day = d.day)
+     INSERT INTO order_counters (day, last)
+       SELECT d.day, m.mx + 1 FROM d, m
+     ON CONFLICT (day) DO UPDATE SET last = GREATEST(order_counters.last, (SELECT mx FROM m)) + 1
+     RETURNING to_char(day, 'YYYY-MM-DD') AS day, to_char(day, 'MMDD') AS mmdd, last`,
+    [createdAt || null, businessDay.TZ, cutoff]
+  );
+  const { day, mmdd, last } = rows[0];
+  return { orderNo: `${mmdd}-${String(last).padStart(3, '0')}`, orderDay: day, dailySeq: last };
 }
 
 async function insertOrderItems(client, orderId, preparedItems) {
@@ -131,12 +151,43 @@ async function priceOrderItems(client, items, { allowPriceOverride = false } = {
   return { subtotal, preparedItems };
 }
 
+/**
+ * معلومات طلب انعمل بدون نت: وقت البيعة الحقيقي، ومين عمله، ومعرّفه المحلي (لمنع التكرار).
+ * حماية: الوقت لازم يكون بآخر 7 أيام ومش بالمستقبل، والموظف لازم يكون موجود فعلاً بالنظام —
+ * وإلا منتجاهلها ومنحفظ الطلب عادي (وقت الإرسال + الموظف الداخل).
+ */
+async function resolveOfflineMeta(offline, staff) {
+  if (!offline || typeof offline !== 'object') return null;
+  const out = {};
+  if (typeof offline.localId === 'string' && /^[\w-]{3,40}$/.test(offline.localId)) {
+    // الجهاز + المعرّف المحلي + وقت البيعة = معرّف فريد للطلب، مهما مين بعته
+    const device = typeof offline.deviceId === 'string' ? offline.deviceId.slice(0, 40) : String(staff?.did || 'x');
+    out.ref = `${device}:${offline.localId}:${String(offline.createdAt || '').slice(0, 30)}`;
+  }
+  const t = Date.parse(offline.createdAt);
+  const now = Date.now();
+  if (Number.isFinite(t) && t <= now + 2 * 60 * 1000 && t >= now - 7 * 24 * 60 * 60 * 1000) {
+    out.createdAt = new Date(t).toISOString();
+  }
+  const id = Number(offline.cashierId);
+  if (Number.isInteger(id) && id > 0) {
+    const r = await pool.query('SELECT name FROM staff_users WHERE id = $1', [id]);
+    if (r.rows.length) out.cashierName = r.rows[0].name;
+  }
+  if (!out.cashierName && typeof offline.cashierName === 'string' && offline.cashierName.trim()) {
+    const r = await pool.query('SELECT name FROM staff_users WHERE name = $1 LIMIT 1', [offline.cashierName.trim()]);
+    if (r.rows.length) out.cashierName = r.rows[0].name;
+  }
+  return out;
+}
+
 // المنطق المشترك بين الطلب العادي (من الموقع) وطلب الكاشير (POS) —
 // بيحسب الأسعار من قاعدة البيانات دايماً، بغض النظر مين بعت الطلب
 async function buildAndSaveOrder(client, opts) {
   const {
     items, customerName, customerPhone, address, orderType, notes, couponCode, status, paymentMethod,
-    chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus
+    chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus,
+    createdAt, offlineRef
   } = opts;
 
   const priced = await priceOrderItems(client, items, { allowPriceOverride: orderSource === 'pos' });
@@ -207,26 +258,26 @@ async function buildAndSaveOrder(client, opts) {
     await client.query('UPDATE customers SET loyalty_points = $1 WHERE id = $2', [newPointsBalance, customerId]);
   }
 
-  let orderNo = generateOrderNo();
   let order;
   for (let attempt = 0; attempt < 5; attempt++) {
     // بنحط نقطة استرجاع قبل كل محاولة — لو المحاولة فشلت (رقم مكرر)، بنرجع لهون بس، مش نلغي كل المعاملة
     // (بدون هاد، أي فشل بالإدخال كان "يسمّم" المعاملة كاملة، فأي محاولة تانية بعدها كانت تفشل برسالة عامة غامضة)
     await client.query('SAVEPOINT order_insert_attempt');
     try {
+      const { orderNo, orderDay, dailySeq } = await nextOrderNo(client, createdAt);
       const orderRes = await client.query(
         `INSERT INTO orders
-          (order_no, customer_id, customer_name, customer_phone, address, order_type, status, payment_method, notes, coupon_code, subtotal, discount, delivery_fee, total, table_number, cashier_name, order_source, kitchen_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+          (order_no, customer_id, customer_name, customer_phone, address, order_type, status, payment_method, notes, coupon_code, subtotal, discount, delivery_fee, total, table_number, cashier_name, order_source, kitchen_status, created_at, offline_ref, order_day, daily_seq)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,COALESCE($19::timestamptz, now()),$20,$21,$22) RETURNING *`,
         [orderNo, customerId, customerName, customerPhone, address || '', orderType, status, paymentMethod, notes || '', appliedCouponCode, subtotal, discount, deliveryFee, total,
-         tableNumber || null, cashierName || null, orderSource || 'online', kitchenStatus || 'served']
+         tableNumber || null, cashierName || null, orderSource || 'online', kitchenStatus || 'served', createdAt || null, offlineRef || null, orderDay, dailySeq]
       );
       order = orderRes.rows[0];
       await client.query('RELEASE SAVEPOINT order_insert_attempt');
       break;
     } catch (err) {
       await client.query('ROLLBACK TO SAVEPOINT order_insert_attempt');
-      if (err.code === '23505') { orderNo = generateOrderNo(); continue; }
+      if (err.code === '23505' && err.constraint !== 'orders_offline_ref_uniq') continue; // رقم مستخدم (نادر) — العدّاد بيعطي الرقم الجاي
       throw err;
     }
   }
@@ -300,7 +351,7 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // POST /api/orders/pos — محمي، للكاشير (بيع مباشر بالمحل أو طاولة أو توصيل هاتفي). بيخصم المخزون تلقائياً حسب الوصفات
 router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { items, customerName, customerPhone, address, notes, couponCode, paymentMethod, tableNumber, orderType, kitchenStatus, redeemPoints, amountPaid } = req.body || {};
+  const { items, customerName, customerPhone, address, notes, couponCode, paymentMethod, tableNumber, orderType, kitchenStatus, redeemPoints, amountPaid, offline } = req.body || {};
 
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'السلة فاضية' });
@@ -314,10 +365,20 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'عنوان التوصيل مطلوب' });
   }
 
+  // طلب انعمل بدون نت وانبعت هلق: منحفظه بوقت البيعة الحقيقي وباسم الموظف يلي عمله (مش يلي داخل وقت الإرسال)
+  const off = await resolveOfflineMeta(offline, req.staff);
+  if (off?.ref) {
+    // انبعت قبل (مثلاً الرد ضاع بالطريق والجهاز رجع بعته) — منرجّع نفس الطلب وما منكرره
+    const dup = await pool.query('SELECT * FROM orders WHERE offline_ref = $1', [off.ref]);
+    if (dup.rows.length) return res.status(200).json(dup.rows[0]);
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await buildAndSaveOrder(client, {
+      createdAt: off?.createdAt || null,
+      offlineRef: off?.ref || null,
       items,
       customerName: customerName || 'زبون الكاشير',
       customerPhone: customerPhone || '-',
@@ -330,7 +391,7 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
       paymentMethod: paymentMethod || 'cash',
       chargeDeliveryFee: resolvedOrderType === 'delivery',
       tableNumber: tableNumber || null,
-      cashierName: req.staff?.name || null,
+      cashierName: off?.cashierName || req.staff?.name || null,
       orderSource: 'pos',
       kitchenStatus: kitchenStatus || 'served'
     });
@@ -346,8 +407,10 @@ router.post('/pos', requireStaffAuth, asyncHandler(async (req, res) => {
     await deductForOrderItems(client, items);
 
     await client.query('COMMIT');
-    if (result.order.kitchen_status === 'new') broadcast('new-order', result.order); // بث لحظي بس لو الطلب فعلاً داخل قائمة المطبخ
-    broadcast('print-order', result.order); // بث لكل الأجهزة — بس الجهاز المحدد "جهاز الطباعة" رح يطبعه فعلياً
+    if (result.order.kitchen_status === 'new' && !off) broadcast('new-order', result.order); // بث لحظي بس لو الطلب فعلاً داخل قائمة المطبخ
+    // طلب بدون نت انطبع وقت البيعة (أو انطبع يدوي) — ما منعيد طباعته على جهاز الطباعة لما يوصل متأخر
+    if (!off) broadcast('print-order', result.order); // بث لكل الأجهزة — بس الجهاز المحدد "جهاز الطباعة" رح يطبعه فعلياً
+    else broadcast('orders-changed', { id: result.order.id });
     res.status(201).json(result.order);
   } catch (err) {
     await client.query('ROLLBACK');

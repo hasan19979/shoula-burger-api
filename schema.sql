@@ -381,6 +381,7 @@ ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_delivery TEXT NOT
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_takeaway TEXT NOT NULL DEFAULT 'جاهز للاستلام';
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_subtitle_dinein TEXT NOT NULL DEFAULT 'صحتين وعافية';
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_qr_image TEXT NOT NULL DEFAULT ''; -- صورة رمز QR بالتذييل
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_qr_url TEXT NOT NULL DEFAULT ''; -- رابط رمز QR (بيترسم بدقة الطابعة — أوضح من الصورة)
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_thanks_text TEXT NOT NULL DEFAULT 'شكراً لثقتكم وتشجيعكم';
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_bottom_text TEXT NOT NULL DEFAULT ''; -- سطر أخير بآخر الفاتورة
 
@@ -414,3 +415,18 @@ ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_qr_size INT NOT NULL DEFAU
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_name_autofit BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_name_min_font_size INT NOT NULL DEFAULT 11; -- أقل حجم خط بيصغّر لإله الضبط الذكي
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS receipt_show_item_icon BOOLEAN NOT NULL DEFAULT true; -- أيقونة بجانب اسم الصنف (بتاخد حوالي 5مم)
+
+-- طلبات انعملت بدون نت: معرّفها المحلي — حتى لو انبعتت مرتين (الرد ضاع بالطريق) ما تنحفظ مرتين
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS offline_ref TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS orders_offline_ref_uniq ON orders(offline_ref) WHERE offline_ref IS NOT NULL;
+
+-- رقم الطلب = تاريخ + تسلسل يومي (مثلاً 1106-023). نفس الرقم ممكن يرجع بعد سنة، فالتفرّد صار على (اليوم + التسلسل)
+CREATE TABLE IF NOT EXISTS order_counters (
+  day DATE PRIMARY KEY,
+  last INT NOT NULL DEFAULT 0
+);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_day DATE;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS daily_seq INT;
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_order_no_key;
+CREATE UNIQUE INDEX IF NOT EXISTS orders_day_seq_uniq ON orders(order_day, daily_seq) WHERE order_day IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_order_no_idx ON orders(order_no);

@@ -1,5 +1,6 @@
 const express = require('express');
 const pool = require('../db/pool');
+const businessDay = require('../businessDay');
 const asyncHandler = require('../utils/asyncHandler');
 const requireAnyAuth = require('../middleware/anyAuth');
 
@@ -10,17 +11,25 @@ router.get('/summary', requireAnyAuth, asyncHandler(async (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: 'التاريخ مطلوب' });
 
-  const from = `${date} 00:00:00`;
-  const to = `${date} 23:59:59`;
+  // يوم العمل (لحد انتهاء الدوام، بتوقيت المطعم) — مش من نص الليل لنص الليل بتوقيت السيرفر
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return res.status(400).json({ error: 'تاريخ غير صالح' });
+  const cutoff = await businessDay.getCutoff();
+  const { rows: [range] } = await pool.query(
+    `SELECT (($1::date + make_interval(mins => $2)) AT TIME ZONE $3) AS "from",
+            (($1::date + 1 + make_interval(mins => $2)) AT TIME ZONE $3) AS "to"`,
+    [date, cutoff, businessDay.TZ]
+  );
+  const from = range.from;
+  const to = range.to;
 
   const ordersRes = await pool.query(
     `SELECT COALESCE(SUM(total), 0) AS total, COUNT(*) AS count
-     FROM orders WHERE status != 'cancelled' AND created_at BETWEEN $1 AND $2`,
+     FROM orders WHERE status != 'cancelled' AND created_at >= $1 AND created_at < $2`,
     [from, to]
   );
   const withdrawalsRes = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
-     FROM cash_withdrawals WHERE created_at BETWEEN $1 AND $2`,
+     FROM cash_withdrawals WHERE created_at >= $1 AND created_at < $2`,
     [from, to]
   );
 

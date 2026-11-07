@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const sessions = require('../sessions');
 
 /** مصادقة موظف الكاشير (PIN) — منفصلة عن مصادقة لوحة التحكم (إيميل/كلمة سر) */
 function requireStaffAuth(req, res, next) {
@@ -12,10 +13,13 @@ function requireStaffAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     if (!payload.staffId) throw new Error('not a staff token');
-    req.staff = payload; // { staffId, role, name }
+    if (sessions.checkToken(payload) === 'replaced') {
+      return res.status(401).json({ error: 'حسابك انفتح على جهاز تاني، فانسكّرت الجلسة هون', code: 'SESSION_REPLACED' });
+    }
+    req.staff = payload; // { staffId, role, name, sid }
     next();
   } catch (err) {
-    return res.status(401).json({ error: 'جلسة الكاشير منتهية، سجّلي دخول من جديد بالرمز السري' });
+    return res.status(401).json({ error: 'جلسة الكاشير منتهية، سجّلي دخول من جديد بالرمز السري', code: 'SESSION_EXPIRED' });
   }
 }
 
