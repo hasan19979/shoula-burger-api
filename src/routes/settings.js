@@ -16,7 +16,8 @@ const ALLOWED_FIELDS = [
   'receipt_subtitle_dinein','receipt_qr_image','receipt_qr_url','receipt_thanks_text','receipt_bottom_text',
   'receipt_notes_font_size','receipt_table_number_font_size','receipt_order_number_font_size',
   'receipt_customer_font_size','receipt_total_font_size','receipt_logo_size','receipt_qr_size',
-  'receipt_name_autofit','receipt_name_min_font_size','receipt_show_item_icon'
+  'receipt_name_autofit','receipt_name_min_font_size','receipt_show_item_icon',
+  'wa_eta_template','wa_ready_template'
 ];
 
 const BOOLEAN_FIELDS = ['receipt_name_autofit', 'receipt_show_item_icon'];

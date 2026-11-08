@@ -430,3 +430,11 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS daily_seq INT;
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_order_no_key;
 CREATE UNIQUE INDEX IF NOT EXISTS orders_day_seq_uniq ON orders(order_day, daily_seq) WHERE order_day IS NOT NULL;
 CREATE INDEX IF NOT EXISTS orders_order_no_idx ON orders(order_no);
+
+-- رسائل واتساب للزبون (عبر Evolution API): الوقت المقدّر و"طلبك جاهز"
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS eta_minutes INT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS eta_sent_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS eta_sent_by TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ready_sent_at TIMESTAMPTZ;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_eta_template TEXT NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_ready_template TEXT NOT NULL DEFAULT '';

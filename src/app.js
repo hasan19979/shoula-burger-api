@@ -75,6 +75,7 @@ app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/withdrawals', withdrawalsRoutes);
 app.use('/api/cash-audit', cashAuditRoutes);
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/whatsapp', require('./routes/whatsapp')); // رسائل للزبائن عبر Evolution API
 
 // أي مسار مش موجود
 app.use((req, res) => {
