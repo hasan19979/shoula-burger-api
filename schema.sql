@@ -438,3 +438,10 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS eta_sent_by TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS ready_sent_at TIMESTAMPTZ;
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_eta_template TEXT NOT NULL DEFAULT '';
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_ready_template TEXT NOT NULL DEFAULT '';
+
+-- تأكيد طلبات الموقع بالواتساب: الطلب بيستنى لحد ما توصل رسالة الزبون على واتساب المطعم
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS awaiting_wa BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS wa_confirmed_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS wa_jid TEXT; -- حساب الواتساب يلي بعت الطلب (منرد عليه بالضبط)
+CREATE INDEX IF NOT EXISTS orders_awaiting_wa_idx ON orders(created_at) WHERE awaiting_wa = true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_require_confirm BOOLEAN NOT NULL DEFAULT false;

@@ -24,7 +24,7 @@ router.get('/summary', requireAnyAuth, asyncHandler(async (req, res) => {
 
   const ordersRes = await pool.query(
     `SELECT COALESCE(SUM(total), 0) AS total, COUNT(*) AS count
-     FROM orders WHERE status != 'cancelled' AND created_at >= $1 AND created_at < $2`,
+     FROM orders WHERE status != 'cancelled' AND awaiting_wa = false AND created_at >= $1 AND created_at < $2`,
     [from, to]
   );
   const withdrawalsRes = await pool.query(

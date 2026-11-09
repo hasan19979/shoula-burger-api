@@ -6,6 +6,8 @@ const { requireStaffRole } = requireStaffAuth;
 const wa = require('../whatsapp');
 const businessDay = require('../businessDay');
 const { broadcast } = require('../realtime');
+const waConfirm = require('../waConfirm');
+const crypto = require('crypto');
 
 const router = express.Router();
 
@@ -40,9 +42,49 @@ function sendError(res, err) {
   throw err;
 }
 
-// GET /api/whatsapp/status — هل الربط مفعّل ومتصل؟ (للإعدادات وشاشة طلبات واتساب)
+// GET /api/whatsapp/status — هل الربط مفعّل ومتصل؟ وآخر رسالة وصلت من Evolution (للإعدادات)
 router.get('/status', requireStaffAuth, asyncHandler(async (req, res) => {
-  res.json(await wa.connectionState());
+  const state = await wa.connectionState();
+  const out = { ...state, ...waConfirm.stats(), webhookConfigured: !!process.env.WA_WEBHOOK_SECRET };
+  // المدير بيشوف رابط الـWebhook كامل (حتى ينسخه لإعدادات Evolution)
+  if (['admin', 'manager'].includes(req.staff?.role) && process.env.WA_WEBHOOK_SECRET) {
+    out.webhookPath = `/api/whatsapp/webhook?secret=${encodeURIComponent(process.env.WA_WEBHOOK_SECRET)}`;
+  }
+  res.json(out);
+}));
+
+/**
+ * POST /api/whatsapp/webhook?secret=... — Evolution بيبعت هون كل رسالة بتوصل على واتساب المطعم.
+ * محمي بكلمة سرية (WA_WEBHOOK_SECRET على Render). بيقبل كمان /webhook/messages-upsert
+ * (لو مفعّل "Webhook by Events" بـEvolution).
+ */
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a || ''));
+  const y = Buffer.from(String(b || ''));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+router.post(['/webhook', '/webhook/:event'], asyncHandler(async (req, res) => {
+  const secret = process.env.WA_WEBHOOK_SECRET;
+  if (!secret) return res.status(503).json({ error: 'WA_WEBHOOK_SECRET مش محطوط على Render' });
+  if (!safeEqual(req.query.secret, secret)) return res.status(401).json({ error: 'unauthorized' });
+  const instance = req.body?.instance || req.body?.instanceName;
+  const expected = wa.config().instance;
+  if (instance && expected && instance !== expected) return res.json({ ignored: 'instance' });
+  const body = req.params.event && !req.body?.event ? { ...req.body, event: req.params.event.replace(/-/g, '.') } : req.body;
+  const result = await waConfirm.handleIncoming(body);
+  res.json(result);
+}));
+
+// POST /api/whatsapp/orders/:id/confirm — تأكيد يدوي من الكاشير (الرسالة وصلت بس ما انقرأ رقم الطلب منها)
+router.post('/orders/:id/confirm', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { rows } = await pool.query('SELECT awaiting_wa FROM orders WHERE id = $1', [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'الطلب مش موجود' });
+  const order = await waConfirm.confirmOrder(req.params.id, null);
+  if (!order) return res.status(409).json({ error: 'الطلب انلغى — ما بينفع يتأكد' });
+  const { rows: items } = await pool.query('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id', [order.id]);
+  const full = { ...order, items };
+  if (rows[0].awaiting_wa) broadcast('new-order', full);
+  res.json(full);
 }));
 
 // POST /api/whatsapp/orders/:id/eta { minutes, force? } — بيبعت للزبون الوقت المقدّر للطلب
@@ -54,9 +96,6 @@ router.post('/orders/:id/eta', requireStaffAuth, asyncHandler(async (req, res) =
   if (order.eta_sent_at && !req.body?.force) {
     return res.status(409).json({ error: `انبعت الوقت قبل (${order.eta_minutes} دقيقة). اكبسي "إرسال مرة تانية" إذا بدك تبعتي وقت جديد.`, code: 'ALREADY_SENT' });
   }
-  const number = wa.normalizePhone(order.customer_phone);
-  if (!number) return res.status(422).json({ error: 'رقم الزبون مش صالح للواتساب' });
-
   const text = wa.fillTemplate(settings.wa_eta_template || DEFAULT_ETA, {
     'الاسم': firstName(order.customer_name),
     'رقم_الطلب': order.order_no,
@@ -65,7 +104,7 @@ router.post('/orders/:id/eta', requireStaffAuth, asyncHandler(async (req, res) =
     'المطعم': settings.restaurant_name || '',
   });
   try {
-    await wa.sendText(number, text);
+    await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
   } catch (err) {
     return sendError(res, err);
   }
@@ -84,15 +123,13 @@ router.post('/orders/:id/ready', requireStaffAuth, asyncHandler(async (req, res)
   if (order.ready_sent_at && !req.body?.force) {
     return res.status(409).json({ error: 'انبعتت رسالة "جاهز" قبل.', code: 'ALREADY_SENT' });
   }
-  const number = wa.normalizePhone(order.customer_phone);
-  if (!number) return res.status(422).json({ error: 'رقم الزبون مش صالح للواتساب' });
   const text = wa.fillTemplate(settings.wa_ready_template || DEFAULT_READY, {
     'الاسم': firstName(order.customer_name),
     'رقم_الطلب': order.order_no,
     'المطعم': settings.restaurant_name || '',
   });
   try {
-    await wa.sendText(number, text);
+    await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
   } catch (err) {
     return sendError(res, err);
   }
@@ -106,8 +143,7 @@ router.post('/orders/:id/ready', requireStaffAuth, asyncHandler(async (req, res)
 
 // POST /api/whatsapp/test { phone, template? } — المدير: رسالة تجربة لرقمه
 router.post('/test', requireStaffAuth, requireStaffRole('admin', 'manager'), asyncHandler(async (req, res) => {
-  const number = wa.normalizePhone(req.body?.phone);
-  if (!number) return res.status(400).json({ error: 'اكتبي رقم صالح' });
+  if (!wa.normalizePhone(req.body?.phone)) return res.status(400).json({ error: 'اكتبي رقم صالح' });
   const { rows: s } = await pool.query('SELECT * FROM settings WHERE id = 1');
   const settings = s[0] || {};
   const which = req.body?.template === 'ready' ? 'ready' : 'eta';
@@ -118,8 +154,9 @@ router.post('/test', requireStaffAuth, requireStaffRole('admin', 'manager'), asy
     'الوقت': clockAfter(20),
     'المطعم': settings.restaurant_name || '',
   });
+  let number;
   try {
-    await wa.sendText(number, `🧪 رسالة تجربة\n\n${text}`);
+    number = await wa.sendToCustomer(req.body.phone, `🧪 رسالة تجربة\n\n${text}`);
   } catch (err) {
     return sendError(res, err);
   }

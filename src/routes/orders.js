@@ -187,7 +187,7 @@ async function buildAndSaveOrder(client, opts) {
   const {
     items, customerName, customerPhone, address, orderType, notes, couponCode, status, paymentMethod,
     chargeDeliveryFee, enforceMinOrder, tableNumber, cashierName, orderSource, kitchenStatus,
-    createdAt, offlineRef
+    createdAt, offlineRef, awaitingWa
   } = opts;
 
   const priced = await priceOrderItems(client, items, { allowPriceOverride: orderSource === 'pos' });
@@ -267,10 +267,10 @@ async function buildAndSaveOrder(client, opts) {
       const { orderNo, orderDay, dailySeq } = await nextOrderNo(client, createdAt);
       const orderRes = await client.query(
         `INSERT INTO orders
-          (order_no, customer_id, customer_name, customer_phone, address, order_type, status, payment_method, notes, coupon_code, subtotal, discount, delivery_fee, total, table_number, cashier_name, order_source, kitchen_status, created_at, offline_ref, order_day, daily_seq)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,COALESCE($19::timestamptz, now()),$20,$21,$22) RETURNING *`,
+          (order_no, customer_id, customer_name, customer_phone, address, order_type, status, payment_method, notes, coupon_code, subtotal, discount, delivery_fee, total, table_number, cashier_name, order_source, kitchen_status, created_at, offline_ref, order_day, daily_seq, awaiting_wa)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,COALESCE($19::timestamptz, now()),$20,$21,$22,$23) RETURNING *`,
         [orderNo, customerId, customerName, customerPhone, address || '', orderType, status, paymentMethod, notes || '', appliedCouponCode, subtotal, discount, deliveryFee, total,
-         tableNumber || null, cashierName || null, orderSource || 'online', kitchenStatus || 'served', createdAt || null, offlineRef || null, orderDay, dailySeq]
+         tableNumber || null, cashierName || null, orderSource || 'online', kitchenStatus || 'served', createdAt || null, offlineRef || null, orderDay, dailySeq, !!awaitingWa]
       );
       order = orderRes.rows[0];
       await client.query('RELEASE SAVEPOINT order_insert_attempt');
@@ -324,10 +324,15 @@ router.post('/', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'عنوان التوصيل مطلوب' });
   }
 
+  // التأكيد بالواتساب مفعّل؟ الطلب بيستنى (مخفي عن الكاشير) لحد ما توصل رسالة الزبون على واتساب المطعم
+  const { rows: cfg } = await pool.query('SELECT wa_require_confirm FROM settings WHERE id = 1');
+  const awaitWa = !!cfg[0]?.wa_require_confirm && require('../whatsapp').config().ready;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await buildAndSaveOrder(client, {
+      awaitingWa: awaitWa,
       items, customerName, customerPhone, address, notes, couponCode, redeemPoints,
       orderType: orderType || 'dine-in',
       status: 'pending',
@@ -339,7 +344,7 @@ router.post('/', asyncHandler(async (req, res) => {
     });
     if (result.error) { await client.query('ROLLBACK'); return res.status(result.error.status).json({ error: result.error.message }); }
     await client.query('COMMIT');
-    broadcast('new-order', result.order); // بث لحظي لشاشة المطبخ فوراً
+    if (!awaitWa) broadcast('new-order', result.order); // بث لحظي لشاشة المطبخ فوراً (أو لما توصل رسالة الواتساب)
     res.status(201).json(result.order);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -442,6 +447,8 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
   if (from) { params.push(from); conditions.push(`created_at >= $${params.length}`); }
   if (to) { params.push(to); conditions.push(`created_at <= $${params.length}`); }
 
+  // طلبات انتهت وهي بتستنى رسالة الواتساب (الزبون ما بعت) — كأنها ما صارت
+  conditions.push(`NOT (awaiting_wa = true AND status = 'cancelled')`);
   let sql = 'SELECT * FROM orders';
   if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
   sql += ' ORDER BY created_at DESC LIMIT 300';

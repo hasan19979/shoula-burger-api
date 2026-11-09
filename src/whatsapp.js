@@ -45,7 +45,11 @@ async function evoFetch(path, { method = 'GET', body } = {}) {
       const detail = JSON.stringify(data?.response?.message || data?.message || data?.error || data || '').slice(0, 200);
       if (res.status === 401 || res.status === 403) throw new WhatsAppError('مفتاح Evolution غلط (EVOLUTION_API_KEY)', 502);
       if (res.status === 404) throw new WhatsAppError(`الـInstance مش موجود على Evolution (EVOLUTION_INSTANCE) ${detail}`, 502);
-      if (/exists|not.*whatsapp|jid/i.test(detail)) throw new WhatsAppError('هاد الرقم مش عليه واتساب', 422);
+      if (/"exists"\s*:\s*false/i.test(detail)) {
+        const e = new WhatsAppError('هاد الرقم مش عليه واتساب', 422);
+        e.notOnWhatsApp = true;
+        throw e;
+      }
       throw new WhatsAppError(`Evolution رد بخطأ (${res.status}) ${detail}`, 502);
     }
     return data;
@@ -88,6 +92,46 @@ async function sendText(number, text) {
   });
 }
 
+/**
+ * أرقام جوال وأوريدو (059/056) ممكن يكون الواتساب عليها مسجّل على 970 أو على 972 —
+ * كثير ناس بفلسطين مسجّلين واتساب على 972 مع إنه الشريحة فلسطينية. فمنجرب الاثنين.
+ */
+function phoneCandidates(raw) {
+  const first = normalizePhone(raw);
+  if (!first) return [];
+  const m = /^(970|972)(5\d{8})$/.exec(first);
+  if (!m) return [first];
+  return [first, (m[1] === '970' ? '972' : '970') + m[2]];
+}
+
+/** بيبعت لرقم الزبون — لو الصيغة الأولى مش عليها واتساب، بيجرب التانية. بيرجّع الرقم يلي نجح */
+async function sendToCustomer(raw, text, jid) {
+  // أول شي: نفس حساب الواتساب يلي بعت رسالة الطلب (من أي بلد) — بدون أي تخمين
+  if (jid) {
+    const target = /@s\.whatsapp\.net$/.test(jid) ? jid.split('@')[0] : jid;
+    try {
+      await sendText(target, text);
+      return target;
+    } catch (err) {
+      if (!err.notOnWhatsApp && !raw) throw err;
+      // ما زبط على الحساب المحفوظ — منكمّل على الرقم المكتوب بالطلب
+    }
+  }
+  const list = phoneCandidates(raw);
+  if (!list.length) throw new WhatsAppError('رقم الزبون مش صالح للواتساب', 422);
+  let lastErr = null;
+  for (const number of list) {
+    try {
+      await sendText(number, text);
+      return number;
+    } catch (err) {
+      if (!err.notOnWhatsApp) throw err;
+      lastErr = err;
+    }
+  }
+  throw new WhatsAppError(`هاد الرقم مش عليه واتساب (جربنا ${list.map((n) => '+' + n).join(' و ')})`, 422);
+}
+
 /** حالة الربط: 'open' = متصل وجاهز */
 async function connectionState() {
   const c = config();
@@ -106,4 +150,4 @@ function fillTemplate(template, vars) {
   return String(template || '').replace(/\{([^}]+)\}/g, (m, k) => (vars[k.trim()] !== undefined ? String(vars[k.trim()]) : m));
 }
 
-module.exports = { config, normalizePhone, sendText, connectionState, fillTemplate, WhatsAppError };
+module.exports = { config, normalizePhone, phoneCandidates, sendText, sendToCustomer, connectionState, fillTemplate, WhatsAppError };
