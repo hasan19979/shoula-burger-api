@@ -132,6 +132,8 @@ async function geminiCall(model, key, body) {
 const openaiReasoning = (m) => /^(o\d|gpt-[5-9])/i.test(m || '');
 /** إعدادات رفضها موديل معيّن — منشيلها عنه بعد أول رفض */
 const openaiDropped = new Map();
+/** قيم إعدادات الموديل نفسه طلبها (مثلاً "set reasoning_effort to 'none'") */
+const openaiForced = new Map();
 /** طلب لـ OpenAI: max_completion_tokens (الجديد، بيشتغل مع كل الموديلات)، وتفكير قليل للموديلات يلي بتفكّر.
  * لو الموديل رفض إعداد ("Unsupported parameter/value: 'x'") منشيله ومنعيد لحاله */
 async function openaiChat(key, body) {
@@ -142,11 +144,18 @@ async function openaiChat(key, body) {
   }
   for (let attempt = 0; attempt < 4; attempt++) {
     const dropped = openaiDropped.get(body.model) || new Set();
-    const b = Object.fromEntries(Object.entries(body).filter(([k]) => !dropped.has(k)));
+    const b = { ...Object.fromEntries(Object.entries(body).filter(([k]) => !dropped.has(k))), ...(openaiForced.get(body.model) || {}) };
     if (dropped.has('max_completion_tokens') && !dropped.has('max_tokens')) b.max_tokens = body.max_completion_tokens; // موديل قديم
     try {
       return await http(`${PROVIDERS.openai.base()}/v1/chat/completions`, { headers: { Authorization: `Bearer ${key}` }, body: b });
     } catch (err) {
+      // الموديل بيحكي شو القيمة المقبولة: "... or set reasoning_effort to 'none'"
+      const fix = /set\s+([a-z_]+)\s+to\s+'([\w-]+)'/i.exec(err.message || '');
+      if (fix && fix[1] in b && b[fix[1]] !== fix[2]) {
+        console.warn(`[ai] OpenAI ${body.model}: ${fix[1]} → '${fix[2]}'`);
+        openaiForced.set(body.model, { ...(openaiForced.get(body.model) || {}), [fix[1]]: fix[2] });
+        continue;
+      }
       const bad = /unsupported (?:parameter|value):\s*'([\w.]+)'/i.exec(err.message || '')?.[1]?.split('.')[0];
       if (!bad || !(bad in b) || bad === 'model' || bad === 'messages') throw err;
       console.warn(`[ai] OpenAI ${body.model}: dropping unsupported '${bad}'`);
