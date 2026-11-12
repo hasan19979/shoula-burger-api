@@ -13,9 +13,9 @@ const PROVIDERS = {
 
 // موديلات افتراضية — بتقدري تغيّريها من الإعدادات (أسماء الموديلات بتتحدّث مع الوقت)
 const DEFAULT_MODELS = {
-  chat: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-4o-mini', gemini: 'gemini-2.5-flash' },
-  vision: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-4o-mini', gemini: 'gemini-2.5-flash' },
-  audio: { openai: 'whisper-1', gemini: 'gemini-2.5-flash' },
+  chat: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-4o-mini', gemini: 'gemini-3.8-flash' },
+  vision: { anthropic: 'claude-sonnet-5-5', openai: 'gpt-4o-mini', gemini: 'gemini-3.8-flash' },
+  audio: { openai: 'whisper-1', gemini: 'gemini-3.8-flash' },
 };
 
 class AiError extends Error {
@@ -32,7 +32,148 @@ function modelFor(kind, provider, chosen) {
   return (chosen && String(chosen).trim()) || DEFAULT_MODELS[kind]?.[provider] || DEFAULT_MODELS.chat[provider];
 }
 
-async function http(url, { headers = {}, body, form, timeout = 60000 } = {}) {
+/** موديلات جيميناي يلي جوجل وقّفتها، ومنستعمل بدالها الموديل يلي هي اقترحته (منحفظها بالذاكرة) */
+const geminiReplaced = new Map();
+const geminiNoThinking = new Set();
+/** طلب لجيميناي: لو الموديل انوقف ورسالة الخطأ بتقترح موديل جديد ("use models/xxx")، منعيد الطلب فيه لحاله.
+ * والموديلات الجديدة بتفكّر قبل ما تكتب، فما منعطيها حد كلمات صغير لدرجة يخلص قبل الجواب */
+async function geminiCallModel(model, key, body, retries) {
+  let m = geminiReplaced.get(model) || model;
+  const gc = body.generationConfig || {};
+  body = { ...body, generationConfig: { ...gc, maxOutputTokens: Math.max(gc.maxOutputTokens || 0, 2048) } };
+  // موديلات جيميناي 3 وما فوق بتفكّر كتير قبل ما تجاوب (وبتتأخر) — لرد واتساب بيكفي تفكير قليل
+  const withThinking = (b, model) =>
+    /gemini-([3-9]|\d{2})/i.test(model) && !geminiNoThinking.has(model)
+      ? { ...b, generationConfig: { ...b.generationConfig, thinkingConfig: { thinkingLevel: 'low' } } }
+      : b;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await http(`${PROVIDERS.gemini.base()}/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, { body: withThinking(body, m), retries });
+    } catch (err) {
+      // موديل ما بيقبل إعداد التفكير — منشيله ومنعيد
+      if (/thinking/i.test(err.message || '') && !geminiNoThinking.has(m) && /gemini-([3-9]|\d{2})/i.test(m)) {
+        geminiNoThinking.add(m);
+        attempt--;
+        continue;
+      }
+      const next = /use\s+models\/([\w.\-]+)/i.exec(err.message || '')?.[1];
+      if (attempt === 0 && next && next !== m) {
+        console.warn(`[ai] Gemini model ${m} retired, switching to ${next}`);
+        geminiReplaced.set(model, next);
+        m = next;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+/** مفاتيح جيميناي: الأساسي، وواحد احتياطي اختياري (مثلاً حساب مجاني تاني) */
+const geminiKeys = () => [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2].filter(Boolean);
+
+/** موديلات جيميناي البديلة (flash / flash-lite) يلي متاحة لهاد المفتاح — منجيبها من جوجل نفسها
+ * (ما منكتب أسماء ثابتة لأنها بتتغير)، ومنحفظها 6 ساعات */
+const altCache = new Map();
+async function geminiAlternatives(key, exclude) {
+  const hit = altCache.get(key);
+  let names = hit && hit.at > Date.now() - 6 * 3600e3 ? hit.names : null;
+  if (!names) {
+    names = [];
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(`${PROVIDERS.gemini.base()}/v1beta/models?pageSize=200&key=${encodeURIComponent(key)}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      const d = await r.json();
+      const ver = (n) => parseFloat((/gemini-(\d+(?:\.\d+)?)/.exec(n) || [])[1] || 0);
+      names = (d.models || [])
+        .filter((x) => (x.supportedGenerationMethods || []).includes('generateContent'))
+        .map((x) => String(x.name || '').replace(/^models\//, ''))
+        .filter((n) => /^gemini-.*flash/i.test(n) && !/tts|image|live|audio|embed|exp|computer|robotics/i.test(n))
+        // الأحدث أول، والـ lite قبل العادي (أخف وحدّه المجاني أعلى)
+        .sort((a, b) => ver(b) - ver(a) || /lite/.test(b) - /lite/.test(a) || /preview/.test(a) - /preview/.test(b));
+    } catch {
+      /* ما قدرنا نجيب القائمة — بنكمل بدون بدائل */
+    }
+    altCache.set(key, { at: Date.now(), names });
+  }
+  return names.filter((n) => n !== exclude).slice(0, 3);
+}
+
+/** طلب لجيميناي مع خطة بديلة: لو الموديل مضغوط أو ما رد بالوقت أو خلص حدّه المجاني (429 — الحد لكل موديل لحاله)،
+ * منجرب موديل جيميناي تاني، وبعدها المفتاح الاحتياطي. كل هاد بأقل من دقيقتين */
+async function geminiCall(model, key, body) {
+  const deadline = Date.now() + 100000;
+  let firstErr;
+  try {
+    return await geminiCallModel(model, key, body, 1);
+  } catch (err) {
+    if (!(err.busy || err.status === 429)) throw err;
+    firstErr = err;
+  }
+  const keys = [key, ...geminiKeys().filter((k) => k !== key)];
+  const tried = new Set([`${key}|${model}`]);
+  for (const k of keys) {
+    for (const m of [model, ...(await geminiAlternatives(k, model))]) {
+      if (tried.has(`${k}|${m}`) || Date.now() > deadline) continue;
+      tried.add(`${k}|${m}`);
+      try {
+        console.warn(`[ai] Gemini fallback → ${m}${k !== key ? ' (المفتاح الاحتياطي)' : ''}`);
+        return await geminiCallModel(m, k, body, 0);
+      } catch (err) {
+        if (!(err.busy || err.status === 429)) throw err;
+      }
+    }
+  }
+  throw firstErr;
+}
+
+/** موديلات OpenAI يلي بتفكّر قبل ما تجاوب (o1/o3/o4، gpt-5...) — التفكير بياكل من حد الكلمات */
+const openaiReasoning = (m) => /^(o\d|gpt-[5-9])/i.test(m || '');
+/** إعدادات رفضها موديل معيّن — منشيلها عنه بعد أول رفض */
+const openaiDropped = new Map();
+/** طلب لـ OpenAI: max_completion_tokens (الجديد، بيشتغل مع كل الموديلات)، وتفكير قليل للموديلات يلي بتفكّر.
+ * لو الموديل رفض إعداد ("Unsupported parameter/value: 'x'") منشيله ومنعيد لحاله */
+async function openaiChat(key, body) {
+  body = { ...body };
+  if (openaiReasoning(body.model)) {
+    body.max_completion_tokens = Math.max(body.max_completion_tokens || 0, 4000);
+    body.reasoning_effort = 'low';
+  }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const dropped = openaiDropped.get(body.model) || new Set();
+    const b = Object.fromEntries(Object.entries(body).filter(([k]) => !dropped.has(k)));
+    if (dropped.has('max_completion_tokens') && !dropped.has('max_tokens')) b.max_tokens = body.max_completion_tokens; // موديل قديم
+    try {
+      return await http(`${PROVIDERS.openai.base()}/v1/chat/completions`, { headers: { Authorization: `Bearer ${key}` }, body: b });
+    } catch (err) {
+      const bad = /unsupported (?:parameter|value):\s*'([\w.]+)'/i.exec(err.message || '')?.[1]?.split('.')[0];
+      if (!bad || !(bad in b) || bad === 'model' || bad === 'messages') throw err;
+      console.warn(`[ai] OpenAI ${body.model}: dropping unsupported '${bad}'`);
+      dropped.add(bad);
+      openaiDropped.set(body.model, dropped);
+    }
+  }
+  throw new AiError('موديل OpenAI رفض الطلب', 400);
+}
+
+/** الشركة مضغوطة مؤقتاً (high demand / overloaded) — منعيد المحاولة، وبعدها منجرب شركة تانية */
+const isBusy = (status, msg) => [500, 502, 503, 504, 529].includes(status) || /high demand|overloaded|unavailable|try again later/i.test(String(msg || ''));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function http(url, opts = {}) {
+  const waits = [2000, 5000].slice(0, opts.retries ?? 2);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await httpOnce(url, opts);
+    } catch (err) {
+      if (!err.busy || err.timeout || attempt >= waits.length) throw err;
+      await sleep(waits[attempt]);
+    }
+  }
+}
+
+async function httpOnce(url, { headers = {}, body, form, timeout = 45000 } = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeout);
   try {
@@ -53,13 +194,23 @@ async function http(url, { headers = {}, body, form, timeout = 60000 } = {}) {
       const msg = data?.error?.message || data?.error?.type || data?.message || data?.raw || `HTTP ${res.status}`;
       if (res.status === 401 || res.status === 403) throw new AiError(`المفتاح غلط أو مش مفعّل (${msg})`, 502);
       if (res.status === 404) throw new AiError(`اسم الموديل غلط أو مش متاح لحسابك (${msg})`, 502);
-      if (res.status === 429) throw new AiError('الحد المسموح من الشركة خلص أو الرصيد خلص — حاولي بعد شوي', 429);
+      if (isBusy(res.status, msg)) {
+        const e = new AiError('شركة الذكاء الاصطناعي مضغوطة هلأ (ضغط مؤقت) — جربي كمان شوي أو اختاري شركة تانية', 503);
+        e.busy = true;
+        throw e;
+      }
+      if (res.status === 429) throw new AiError('الحد المسموح من الشركة خلص (بالحساب المجاني في حد بالدقيقة وباليوم) — حاولي بعد شوي', 429);
       throw new AiError(`خطأ من شركة الذكاء الاصطناعي: ${String(msg).slice(0, 200)}`, 502);
     }
     return data;
   } catch (err) {
     if (err instanceof AiError) throw err;
-    if (err.name === 'AbortError') throw new AiError('شركة الذكاء الاصطناعي ما ردت بالوقت', 504);
+    if (err.name === 'AbortError') {
+      const e = new AiError('شركة الذكاء الاصطناعي ما ردت بالوقت — جربي كمان شوي أو اختاري شركة تانية', 504);
+      e.busy = true; // منجرب شركة تانية
+      e.timeout = true; // بس ما منعيد على نفس الشركة (كانت رح تاخد نفس الوقت)
+      throw e;
+    }
     throw new AiError('ما قدرنا نوصل لشركة الذكاء الاصطناعي', 502);
   } finally {
     clearTimeout(t);
@@ -115,7 +266,7 @@ function mergeTurns(history) {
  * execTool(name, args) → نتيجة (object) بترجع للموديل
  * بيرجّع { text, calls: [{name, args, result}] }
  */
-async function runAgent({ provider, model, system, history, tools = [], execTool, maxSteps = 5, maxTokens = 800, kind = 'chat' }) {
+async function runAgentOnce({ provider, model, system, history, tools = [], execTool, maxSteps = 5, maxTokens = 800, kind = 'chat' }) {
   const key = ensureKey(provider);
   const turns = mergeTurns(history);
   const calls = [];
@@ -150,12 +301,9 @@ async function runAgent({ provider, model, system, history, tools = [], execTool
   if (provider === 'openai') {
     const messages = [{ role: 'system', content: system }, ...turns.map((t) => ({ role: t.role, content: t.text }))];
     for (let step = 0; step < maxSteps; step++) {
-      const data = await http(`${PROVIDERS.openai.base()}/v1/chat/completions`, {
-        headers: { Authorization: `Bearer ${key}` },
-        body: {
-          model: m, messages, max_tokens: maxTokens,
-          ...(tools.length ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) } : {}),
-        },
+      const data = await openaiChat(key, {
+        model: m, messages, max_completion_tokens: maxTokens,
+        ...(tools.length ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) } : {}),
       });
       await recordUsage('openai', kind, data.usage?.prompt_tokens, data.usage?.completion_tokens);
       const msg = data.choices?.[0]?.message || {};
@@ -180,19 +328,17 @@ async function runAgent({ provider, model, system, history, tools = [], execTool
   // gemini
   const contents = turns.map((t) => ({ role: t.role === 'assistant' ? 'model' : 'user', parts: [{ text: t.text }] }));
   for (let step = 0; step < maxSteps; step++) {
-    const data = await http(`${PROVIDERS.gemini.base()}/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, {
-      body: {
+    const data = await geminiCall(m, key, {
         systemInstruction: { parts: [{ text: system }] },
         contents,
         generationConfig: { maxOutputTokens: maxTokens },
         ...(tools.length ? { tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }] } : {}),
-      },
     });
     await recordUsage('gemini', kind, data.usageMetadata?.promptTokenCount, data.usageMetadata?.candidatesTokenCount);
     const content = data.candidates?.[0]?.content || { role: 'model', parts: [] };
     const parts = content.parts || [];
     const fcs = parts.filter((p) => p.functionCall);
-    if (!fcs.length || !execTool) return { text: parts.filter((p) => p.text).map((p) => p.text).join('\n').trim(), calls };
+    if (!fcs.length || !execTool) return { text: parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('\n').trim(), calls };
     contents.push({ role: 'model', parts });
     const responses = [];
     for (const p of fcs) {
@@ -214,7 +360,7 @@ async function safeExec(execTool, name, args) {
 }
 
 /** وصف صورة بالكتابة (حتى تدخل للمحادثة) */
-async function describeImage({ provider, model, base64, mime = 'image/jpeg', prompt }) {
+async function describeImageOnce({ provider, model, base64, mime = 'image/jpeg', prompt }) {
   const key = ensureKey(provider);
   const m = modelFor('vision', provider, model);
   const p = prompt || 'صف هاي الصورة باختصار بالعربي (جملة أو جملتين). إذا فيها أكل أو منيو أو طلب أو عنوان، اذكر التفاصيل المهمة.';
@@ -227,22 +373,17 @@ async function describeImage({ provider, model, base64, mime = 'image/jpeg', pro
     return (d.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
   }
   if (provider === 'openai') {
-    const d = await http(`${PROVIDERS.openai.base()}/v1/chat/completions`, {
-      headers: { Authorization: `Bearer ${key}` },
-      body: { model: m, max_tokens: 300, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }, { type: 'text', text: p }] }] },
-    });
+    const d = await openaiChat(key, { model: m, max_completion_tokens: 300, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } }, { type: 'text', text: p }] }] });
     await recordUsage('openai', 'vision', d.usage?.prompt_tokens, d.usage?.completion_tokens);
     return String(d.choices?.[0]?.message?.content || '').trim();
   }
-  const d = await http(`${PROVIDERS.gemini.base()}/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, {
-    body: { contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mime, data: base64 } }, { text: p }] }], generationConfig: { maxOutputTokens: 300 } },
-  });
+  const d = await geminiCall(m, key, { contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mime, data: base64 } }, { text: p }] }], generationConfig: { maxOutputTokens: 300 } });
   await recordUsage('gemini', 'vision', d.usageMetadata?.promptTokenCount, d.usageMetadata?.candidatesTokenCount);
-  return (d.candidates?.[0]?.content?.parts || []).filter((x) => x.text).map((x) => x.text).join('\n').trim();
+  return (d.candidates?.[0]?.content?.parts || []).filter((x) => x.text && !x.thought).map((x) => x.text).join('\n').trim();
 }
 
 /** تحويل فويس لكتابة — Claude ما بيسمع صوت، فبس OpenAI أو Gemini */
-async function transcribeAudio({ provider, model, base64, mime = 'audio/ogg' }) {
+async function transcribeAudioOnce({ provider, model, base64, mime = 'audio/ogg' }) {
   if (provider === 'anthropic') throw new AiError('Claude ما بيحوّل الصوت لكتابة — اختاري Gemini أو OpenAI للصوت', 400);
   const key = ensureKey(provider);
   const m = modelFor('audio', provider, model);
@@ -254,14 +395,42 @@ async function transcribeAudio({ provider, model, base64, mime = 'audio/ogg' }) 
     await recordUsage('openai', 'audio', 0, 0);
     return String(d.text || '').trim();
   }
-  const d = await http(`${PROVIDERS.gemini.base()}/v1beta/models/${encodeURIComponent(m)}:generateContent?key=${encodeURIComponent(key)}`, {
-    body: {
+  const d = await geminiCall(m, key, {
       contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mime.split(';')[0], data: base64 } }, { text: 'اكتب حرفياً شو انقال بهاد التسجيل، بنفس اللهجة، بدون أي إضافة.' }] }],
       generationConfig: { maxOutputTokens: 500 },
-    },
   });
   await recordUsage('gemini', 'audio', d.usageMetadata?.promptTokenCount, d.usageMetadata?.candidatesTokenCount);
-  return (d.candidates?.[0]?.content?.parts || []).filter((x) => x.text).map((x) => x.text).join(' ').trim();
+  return (d.candidates?.[0]?.content?.parts || []).filter((x) => x.text && !x.thought).map((x) => x.text).join(' ').trim();
+}
+
+/** لو الشركة المختارة مضغوطة، منجرب الشركات التانية يلي إلها مفتاح (بموديلها الافتراضي) */
+async function withFallback(provider, allowed, fn) {
+  try {
+    return await fn(provider, true);
+  } catch (err) {
+    if (!err.busy) throw err;
+    for (const p of allowed.filter((x) => x !== provider && hasKey(x))) {
+      try {
+        console.warn(`[ai] ${provider} busy, falling back to ${p}`);
+        return await fn(p, false);
+      } catch (e2) {
+        if (!e2.busy) throw e2;
+      }
+    }
+    throw err;
+  }
+}
+
+const ALL = ['anthropic', 'openai', 'gemini'];
+async function runAgent(opts) {
+  if (opts.fallback === false) return runAgentOnce(opts);
+  return withFallback(opts.provider, ALL, async (p, same) => ({ ...(await runAgentOnce({ ...opts, provider: p, model: same ? opts.model : '' })), provider: p }));
+}
+async function describeImage(opts) {
+  return withFallback(opts.provider, ALL, (p, same) => describeImageOnce({ ...opts, provider: p, model: same ? opts.model : '' }));
+}
+async function transcribeAudio(opts) {
+  return withFallback(opts.provider, ['openai', 'gemini'], (p, same) => transcribeAudioOnce({ ...opts, provider: p, model: same ? opts.model : '' }));
 }
 
 module.exports = { PROVIDERS, DEFAULT_MODELS, AiError, hasKey, keyStatus, runAgent, describeImage, transcribeAudio, usedToday, recordUsage, modelFor };

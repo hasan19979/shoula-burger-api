@@ -97,8 +97,13 @@ const SYSTEM = `إنت محلل بيانات لمطعم. بتحكي باللهج
 
 async function analyze({ days, question, provider, model }) {
   const cfg = await store.getConfig();
-  const p = provider || cfg.analysis.provider || cfg.chat.provider;
-  const m = provider ? model : cfg.analysis.provider ? cfg.analysis.model : cfg.chat.model;
+  let p = provider || cfg.analysis.provider || cfg.chat.provider;
+  let m = provider ? model : cfg.analysis.provider ? cfg.analysis.model : cfg.chat.model;
+  if (!provider && !ai.hasKey(p)) {
+    // الشركة المختارة ما إلها مفتاح — منستعمل أول شركة إلها مفتاح
+    p = ['anthropic', 'openai', 'gemini'].find((x) => ai.hasKey(x)) || p;
+    m = '';
+  }
   const data = await collect(days);
   if (!data.الإجمالي.طلبات && !data.الفترة_السابقة_للمقارنة.طلبات) {
     return { text: 'ما في طلبات بهاي الفترة لحتى أحللها.', data };

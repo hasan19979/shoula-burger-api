@@ -41,7 +41,10 @@ async function onIncoming(m) {
 async function processMedia(message, raw) {
   const cfg = await store.getConfig();
   const which = message.kind === 'image' ? cfg.vision : cfg.audio;
-  if (!which?.provider || which.provider === 'off' || !ai.hasKey(which.provider)) return;
+  if (!which?.provider || which.provider === 'off') return;
+  const provider = pickProvider(which.provider, message.kind === 'image' ? ['gemini', 'openai', 'anthropic'] : ['gemini', 'openai']);
+  if (!provider) return;
+  if (provider !== which.provider) Object.assign(which, { provider, model: '' });
   const media = await wa.getMediaBase64(raw);
   if (!media) return;
   let note = '';
@@ -388,6 +391,21 @@ async function historyOf(conversationId) {
 }
 
 /* ---------- الرد ---------- */
+/** الشركة المختارة لو إلها مفتاح، وإلا أول شركة إلها مفتاح */
+function pickProvider(chosen, order) {
+  if (chosen && ai.hasKey(chosen)) return chosen;
+  return order.find((p) => ai.hasKey(p)) || null;
+}
+
+/** ملاحظة "ليش ما رد" — ما منكررها بنفس المحادثة قبل ما تمرق المدة (بالدقايق) */
+async function skipNote(conversationId, body, everyMin) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM wa_messages WHERE conversation_id = $1 AND direction = 'note' AND body = $2 AND created_at > now() - ($3::int * interval '1 minute') LIMIT 1`,
+    [conversationId, body, everyMin]
+  );
+  if (!rows.length) await store.addMessage(conversationId, { direction: 'note', sender: 'system', body });
+}
+
 async function replyNow(conversationId) {
   if (running.has(conversationId)) return scheduleReply(conversationId, 3000);
   running.add(conversationId);
@@ -395,9 +413,23 @@ async function replyNow(conversationId) {
     const cfg = await store.getConfig();
     const { rows } = await pool.query('SELECT * FROM wa_conversations WHERE id = $1', [conversationId]);
     const conv = rows[0];
-    if (!conv || !cfg.enabled || !conv.ai_enabled || conv.needs_human) return;
-    if (!ai.hasKey(cfg.chat.provider)) return;
-    if (!(await scheduleAllows(cfg))) return;
+    if (!conv) return;
+    // ليش المساعد ما رد؟ منكتبها كملاحظة صغيرة بالمحادثة (مرة وحدة كل فترة) — حتى ما يضل سكوت بدون سبب
+    if (!cfg.enabled) return skipNote(conv.id, 'المساعد ما رد: مطفي من الإعدادات ← الذكاء الاصطناعي', 360);
+    if (!conv.ai_enabled) return skipNote(conv.id, 'المساعد ما رد: مطفي بهاي المحادثة (لأنه موظف رد). شغّليه من زر "المساعد" فوق المحادثة', 60);
+    if (conv.needs_human) {
+      // لو تحوّلت لموظف بسبب خطأ تقني (ضغط، تأخير...) والزبون بعت رسالة جديدة — منرجع نجرب
+      if (/^المساعد ما قدر يرد/.test(conv.needs_human_reason || '')) {
+        await store.updateConversation(conv.id, { needs_human: false, needs_human_reason: null });
+        conv.needs_human = false;
+      } else {
+        return skipNote(conv.id, 'المساعد ما رد: المحادثة محوّلة لموظف. اكبسي "تم — رجّعيها للمساعد"', 60);
+      }
+    }
+    const chatProvider = pickProvider(cfg.chat.provider, ['anthropic', 'openai', 'gemini']);
+    if (!chatProvider) return skipNote(conv.id, 'المساعد ما رد: ما في مفتاح ذكاء اصطناعي على Render', 60);
+    if (chatProvider !== cfg.chat.provider) cfg.chat = { provider: chatProvider, model: '' };
+    if (!(await scheduleAllows(cfg))) return skipNote(conv.id, 'المساعد ما رد: هلأ برا أوقات شغله (حسب الإعدادات)', 60);
     // آخر رسالة لازم تكون من الزبون (ما في داعي نرد مرتين)
     const last = await pool.query(`SELECT direction, ai_status FROM wa_messages WHERE conversation_id = $1 AND direction <> 'note' ORDER BY id DESC LIMIT 1`, [conversationId]);
     if (!last.rows.length || last.rows[0].direction !== 'in') return;
@@ -486,11 +518,12 @@ async function sandboxReply({ messages, provider, model }) {
   const guide = await store.getGuide();
   const menu = await loadMenu();
   const conv = { id: 0, jid: 'sandbox', name: 'تجربة', draft_order: null };
-  const p = provider || cfg.chat.provider;
+  const p = provider || pickProvider(cfg.chat.provider, ['anthropic', 'openai', 'gemini']) || cfg.chat.provider;
+  if (!provider && p !== cfg.chat.provider) cfg.chat = { provider: p, model: '' };
   const system = await buildSystem(conv, { ...cfg, mode: 'auto' }, guide, { menu, sandbox: true });
   const state = {};
   const out = await ai.runAgent({
-    provider: p, model: provider ? model : cfg.chat.model, system,
+    provider: p, model: provider ? model : cfg.chat.model, system, fallback: !provider, // بالمقارنة بدنا جواب نفس الشركة
     history: (messages || []).slice(-20).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', text: String(m.text || '').slice(0, 2000) })),
     tools: TOOLS, execTool: makeExecTool(conv, { ...cfg, mode: 'auto' }, menu, state, { sandbox: true }), kind: 'chat',
   });

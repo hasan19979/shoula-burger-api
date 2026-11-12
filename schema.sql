@@ -445,3 +445,62 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS wa_confirmed_at TIMESTAMPTZ;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS wa_jid TEXT; -- حساب الواتساب يلي بعت الطلب (منرد عليه بالضبط)
 CREATE INDEX IF NOT EXISTS orders_awaiting_wa_idx ON orders(created_at) WHERE awaiting_wa = true;
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS wa_require_confirm BOOLEAN NOT NULL DEFAULT false;
+
+-- ===== صندوق رسائل الواتساب + المساعد الذكي =====
+CREATE TABLE IF NOT EXISTS wa_conversations (
+  id SERIAL PRIMARY KEY,
+  jid TEXT NOT NULL UNIQUE,              -- حساب الواتساب (منرد عليه بالضبط)
+  phone TEXT,                            -- الرقم (لو معروف)
+  name TEXT,                             -- اسم الزبون بالواتساب
+  customer_id INT,
+  last_message_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_preview TEXT NOT NULL DEFAULT '',
+  unread INT NOT NULL DEFAULT 0,
+  ai_enabled BOOLEAN NOT NULL DEFAULT true,  -- المساعد بيرد بهاي المحادثة؟ (بيطفى لحاله لما موظف يرد)
+  needs_human BOOLEAN NOT NULL DEFAULT false,
+  needs_human_reason TEXT,
+  draft_order JSONB,                     -- الطلب يلي المساعد عم يجهزه مع الزبون
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS wa_conversations_last_idx ON wa_conversations(last_message_at DESC);
+
+CREATE TABLE IF NOT EXISTS wa_messages (
+  id BIGSERIAL PRIMARY KEY,
+  conversation_id INT NOT NULL REFERENCES wa_conversations(id) ON DELETE CASCADE,
+  direction TEXT NOT NULL,               -- in / out
+  kind TEXT NOT NULL DEFAULT 'text',     -- text / image / audio / other
+  body TEXT NOT NULL DEFAULT '',
+  media_note TEXT,                       -- وصف الصورة / نص الفويس
+  sender TEXT NOT NULL DEFAULT 'customer', -- customer / staff / ai / phone
+  sender_name TEXT,
+  ai_status TEXT,                        -- suggested / sent / rejected (ردود المساعد)
+  rating SMALLINT,                       -- 1 / -1
+  wa_id TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS wa_messages_conv_idx ON wa_messages(conversation_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS wa_messages_waid_uniq ON wa_messages(wa_id) WHERE wa_id IS NOT NULL;
+
+-- دليل المساعد (شخصيته، قواعده، أسئلة وأجوبة، أمثلة) — كل حفظ نسخة جديدة، فبترجعي لأي نسخة
+CREATE TABLE IF NOT EXISTS ai_guide_versions (
+  id SERIAL PRIMARY KEY,
+  content JSONB NOT NULL,
+  note TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- استهلاك الذكاء الاصطناعي باليوم (للحد اليومي وصفحة الأداء)
+CREATE TABLE IF NOT EXISTS ai_usage (
+  day DATE NOT NULL,
+  provider TEXT NOT NULL,
+  kind TEXT NOT NULL,                    -- chat / vision / audio / analysis
+  requests INT NOT NULL DEFAULT 0,
+  input_tokens BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, provider, kind)
+);
+
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS ai_created BOOLEAN NOT NULL DEFAULT false;
