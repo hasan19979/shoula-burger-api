@@ -79,10 +79,17 @@ router.patch('/conversations/:id', asyncHandler(async (req, res) => {
     if (!req.body.needs_human) patch.needs_human_reason = null;
   }
   if (req.body?.clear_draft) patch.draft_order = null;
+  // "تم — رجّعيها للمساعد": الموظف خلّص الموضوع. المساعد بيشغّل كمان، وبيبلش من بعد هاي النقطة
+  // (ما بيرجع يقرا الموضوع القديم ويحوّل مرة تانية) — وبيرد بس لما الزبون يبعت رسالة جديدة
+  const returning = patch.needs_human === false;
+  if (returning) patch.ai_enabled = true;
   const conv = await store.updateConversation(req.params.id, patch);
   if (!conv) return res.status(404).json({ error: 'المحادثة مش موجودة' });
-  // رجّعتيها للمساعد وآخر رسالة من الزبون — بيرد عليها
-  if (patch.ai_enabled === true || patch.needs_human === false) assistant.scheduleReply(conv.id, 1500);
+  if (returning) {
+    await store.addMessage(conv.id, { direction: 'note', sender: 'system', body: `${assistant.RETURN_MARK} — ${req.staff?.name || 'موظف'}` });
+  } else if (patch.ai_enabled === true) {
+    assistant.scheduleReply(conv.id, 1500); // شغّلتي المساعد وآخر رسالة من الزبون — بيرد عليها
+  }
   res.json(conv);
 }));
 

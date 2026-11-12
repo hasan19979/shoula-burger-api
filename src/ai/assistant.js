@@ -149,7 +149,7 @@ async function customerContext(conv) {
   return out.join('\n') || 'زبون جديد.';
 }
 
-async function buildSystem(conv, cfg, guide, { menu, sandbox } = {}) {
+async function buildSystem(conv, cfg, guide, { menu, sandbox, prior } = {}) {
   const { rows } = await pool.query('SELECT * FROM settings WHERE id = 1');
   const s = rows[0] || {};
   const open = await isOpenNow();
@@ -183,6 +183,12 @@ async function buildSystem(conv, cfg, guide, { menu, sandbox } = {}) {
   if ((g.examples || []).length) parts.push('', '# أمثلة لردود منيحة (قلّد أسلوبها)', ...g.examples.map((e) => `الزبون: ${e.customer}\nالرد: ${e.reply}`));
   parts.push('', '# المنيو (الرقم بين [] للأدوات بس، ما تذكره للزبون)', menuText(menu || (await loadMenu())));
   parts.push('', '# الزبون', sandbox ? 'محادثة تجريبية.' : await customerContext(conv));
+  if (prior) {
+    parts.push(
+      '', '# محادثة سابقة انحلت مع موظف المطعم (للسياق بس)', prior,
+      'الموظف تعامل مع الموضوع هاد ورجّع المحادثة إلك. ما تحوّل لموظف مرة تانية على نفس الموضوع إلا إذا الزبون طلب هالشي صراحة أو صار إشي جديد ما بتعرفه.'
+    );
+  }
   if (conv.draft_order?.lines?.length) parts.push('', '# الطلب يلي عم يتجهّز هلق', conv.draft_order.lines.join('\n'), `المجموع: ${conv.draft_order.total}`);
   return parts.filter((x) => x !== '').join('\n');
 }
@@ -376,18 +382,42 @@ function makeExecTool(conv, cfg, menu, state, { sandbox } = {}) {
 }
 
 /** المحادثة بشكل الموديل (آخر 20 رسالة) */
-async function historyOf(conversationId) {
+const RETURN_MARK = 'رجعت للمساعد';
+
+/** آخر مرة الموظف رجّع المحادثة للمساعد (رقم الملاحظة) — 0 لو ما صار */
+async function lastReturnId(conversationId) {
   const { rows } = await pool.query(
-    `SELECT * FROM (SELECT * FROM wa_messages WHERE conversation_id = $1 AND direction <> 'note' AND (ai_status IS NULL OR ai_status = 'sent') ORDER BY id DESC LIMIT 20) t ORDER BY id`,
-    [conversationId]
+    `SELECT id FROM wa_messages WHERE conversation_id = $1 AND direction = 'note' AND body LIKE $2 ORDER BY id DESC LIMIT 1`,
+    [conversationId, RETURN_MARK + '%']
   );
-  return rows.map((m) => {
-    let text = m.body || '';
-    if (m.kind === 'image') text = `[صورة${m.media_note ? `: ${m.media_note}` : ' — ما قدرنا نشوف محتواها'}] ${text}`;
-    if (m.kind === 'audio') text = `[رسالة صوتية${m.media_note ? `: ${m.media_note}` : ' — ما قدرنا نسمعها، اطلب منه يكتب'}] ${text}`;
-    if (m.direction === 'out' && m.sender !== 'ai') text = `(رد موظف) ${text}`;
-    return { role: m.direction === 'in' ? 'user' : 'assistant', text };
-  });
+  return rows[0]?.id || 0;
+}
+
+function toTurn(m) {
+  let text = m.body || '';
+  if (m.kind === 'image') text = `[صورة${m.media_note ? `: ${m.media_note}` : ' — ما قدرنا نشوف محتواها'}] ${text}`;
+  if (m.kind === 'audio') text = `[رسالة صوتية${m.media_note ? `: ${m.media_note}` : ' — ما قدرنا نسمعها، اطلب منه يكتب'}] ${text}`;
+  if (m.direction === 'out' && m.sender !== 'ai') text = `(رد موظف) ${text}`;
+  return { role: m.direction === 'in' ? 'user' : 'assistant', text };
+}
+
+/** الرسائل يلي المساعد بيشوفها: بس يلي بعد آخر "رجعت للمساعد" — الموضوع يلي قبل انحل مع الموظف،
+ * وإلا رح يقراه من جديد ويحوّل مرة تانية (ويعلق). يلي قبل بيوصله كسياق قصير بس */
+async function historyOf(conversationId) {
+  const since = await lastReturnId(conversationId);
+  const q = (cond) =>
+    pool.query(
+      `SELECT * FROM (SELECT * FROM wa_messages WHERE conversation_id = $1 AND direction <> 'note' AND (ai_status IS NULL OR ai_status = 'sent') AND ${cond} ORDER BY id DESC LIMIT 20) t ORDER BY id`,
+      [conversationId, since]
+    );
+  const turns = (await q('id > $2')).rows.map(toTurn);
+  while (turns.length && turns[0].role !== 'user') turns.shift(); // لازم تبلش برسالة الزبون
+  let prior = '';
+  if (since) {
+    const before = (await q('id < $2')).rows.slice(-6).map(toTurn);
+    prior = before.map((t) => `${t.role === 'user' ? 'الزبون' : 'المطعم'}: ${t.text}`).join('\n');
+  }
+  return { turns, prior };
 }
 
 /* ---------- الرد ---------- */
@@ -431,8 +461,10 @@ async function replyNow(conversationId) {
     if (chatProvider !== cfg.chat.provider) cfg.chat = { provider: chatProvider, model: '' };
     if (!(await scheduleAllows(cfg))) return skipNote(conv.id, 'المساعد ما رد: هلأ برا أوقات شغله (حسب الإعدادات)', 60);
     // آخر رسالة لازم تكون من الزبون (ما في داعي نرد مرتين)
-    const last = await pool.query(`SELECT direction, ai_status FROM wa_messages WHERE conversation_id = $1 AND direction <> 'note' ORDER BY id DESC LIMIT 1`, [conversationId]);
+    const last = await pool.query(`SELECT id, direction, ai_status FROM wa_messages WHERE conversation_id = $1 AND direction <> 'note' ORDER BY id DESC LIMIT 1`, [conversationId]);
     if (!last.rows.length || last.rows[0].direction !== 'in') return;
+    // رسالة قديمة من قبل ما ترجّعيها — الموظف تعامل معها، منستنى رسالة جديدة من الزبون
+    if (last.rows[0].id < (await lastReturnId(conversationId))) return;
     if (cfg.dailyLimit && (await ai.usedToday()) >= cfg.dailyLimit) {
       await store.updateConversation(conversationId, { needs_human: true, needs_human_reason: 'الحد اليومي للمساعد خلص' });
       await store.addMessage(conversationId, { direction: 'note', sender: 'system', body: 'حوّل لموظف: الحد اليومي للمساعد خلص' });
@@ -447,12 +479,14 @@ async function replyNow(conversationId) {
 
     const guide = await store.getGuide();
     const menu = await loadMenu();
-    const system = await buildSystem(conv, cfg, guide, { menu });
+    const { turns, prior } = await historyOf(conversationId);
+    if (!turns.length) return;
+    const system = await buildSystem(conv, cfg, guide, { menu, prior });
     const state = {};
     let out;
     try {
       out = await ai.runAgent({
-        provider: cfg.chat.provider, model: cfg.chat.model, system, history: await historyOf(conversationId),
+        provider: cfg.chat.provider, model: cfg.chat.model, system, history: turns,
         tools: TOOLS, execTool: makeExecTool(conv, cfg, menu, state), kind: 'chat',
       });
     } catch (err) {
@@ -530,4 +564,5 @@ async function sandboxReply({ messages, provider, model }) {
   return { text: out.text || (state.handoff ? cfg.handoffMessage : ''), draft: state.draft || null, handoff: state.handoff || null, calls: out.calls.map((c) => c.name) };
 }
 
-module.exports = { onIncoming, replyNow, scheduleReply, sendOut, createOrderFromDraft, sandboxReply, loadMenu, TOOLS };
+module.exports = {
+  RETURN_MARK, onIncoming, replyNow, scheduleReply, sendOut, createOrderFromDraft, sandboxReply, loadMenu, TOOLS };
