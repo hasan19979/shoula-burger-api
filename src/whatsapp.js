@@ -132,6 +132,31 @@ async function sendToCustomer(raw, text, jid) {
   throw new WhatsAppError(`هاد الرقم مش عليه واتساب (جربنا ${list.map((n) => '+' + n).join(' و ')})`, 422);
 }
 
+/** بيجيب ملف (صورة/فويس) من رسالة واتساب عن طريق Evolution — بيرجّع { base64, mimetype } أو null */
+async function getMediaBase64(data) {
+  if (data?.message?.base64) {
+    const mt = data.message.imageMessage?.mimetype || data.message.audioMessage?.mimetype || 'application/octet-stream';
+    return { base64: data.message.base64, mimetype: mt };
+  }
+  const c = config();
+  if (!c.ready || !data?.key?.id) return null;
+  try {
+    const r = await evoFetch(`/chat/getBase64FromMediaMessage/${encodeURIComponent(c.instance)}`, {
+      method: 'POST',
+      body: { message: { key: { id: data.key.id, remoteJid: data.key.remoteJid, fromMe: !!data.key.fromMe } }, convertToMp4: false },
+    });
+    if (!r?.base64) return null;
+    return { base64: r.base64, mimetype: r.mimetype || r.mimeType || 'application/octet-stream' };
+  } catch {
+    return null;
+  }
+}
+
+/** رقم/حساب الإرسال من الـjid (الحسابات العادية بالأرقام، والمخفية @lid زي ما هي) */
+function targetOf(jid) {
+  return /@s\.whatsapp\.net$/.test(jid) ? jid.split('@')[0] : jid;
+}
+
 /** حالة الربط: 'open' = متصل وجاهز */
 async function connectionState() {
   const c = config();
@@ -150,4 +175,4 @@ function fillTemplate(template, vars) {
   return String(template || '').replace(/\{([^}]+)\}/g, (m, k) => (vars[k.trim()] !== undefined ? String(vars[k.trim()]) : m));
 }
 
-module.exports = { config, normalizePhone, phoneCandidates, sendText, sendToCustomer, connectionState, fillTemplate, WhatsAppError };
+module.exports = { config, normalizePhone, phoneCandidates, sendText, sendToCustomer, connectionState, fillTemplate, getMediaBase64, targetOf, WhatsAppError };

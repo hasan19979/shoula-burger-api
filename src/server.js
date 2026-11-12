@@ -21,6 +21,7 @@ autoMigrate()
   .catch((err) => console.error('⚠️ التحديث التلقائي لقاعدة البيانات فشل:', err.message))
   .finally(() => {
     require('./waConfirm').startExpiryJob(); // طلبات الموقع يلي ما وصلت رسالتها بتنلغى بعد ساعة
+    require('./ai/store').startCleanupJob(); // رسائل الصندوق القديمة بتنمسح (حسب الإعدادات)
     server.listen(PORT, () => {
       console.log(`🚀 السيرفر شغال على البورت ${PORT} (مع اتصال لحظي Socket.IO)`);
     });

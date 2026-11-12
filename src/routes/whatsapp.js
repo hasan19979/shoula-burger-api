@@ -37,6 +37,18 @@ async function loadOrderAndSettings(id) {
   return { order: rows[0], settings: s[0] || {} };
 }
 
+/** رسائل الوقت و"جاهز" بتنحفظ كمان بصندوق الرسائل (حتى المحادثة تكون كاملة) */
+async function logToInbox(order, target, text, staffName) {
+  try {
+    const jid = order.wa_jid || (String(target).includes('@') ? target : `${target}@s.whatsapp.net`);
+    const store = require('../ai/store');
+    const conv = await store.upsertConversation(jid, {});
+    await store.addMessage(conv.id, { direction: 'out', body: text, sender: 'staff', sender_name: staffName || null });
+  } catch {
+    /* الصندوق مش ضروري لنجاح الإرسال */
+  }
+}
+
 function sendError(res, err) {
   if (err instanceof wa.WhatsAppError) return res.status(err.status).json({ error: err.message });
   throw err;
@@ -103,11 +115,13 @@ router.post('/orders/:id/eta', requireStaffAuth, asyncHandler(async (req, res) =
     'الوقت': clockAfter(minutes),
     'المطعم': settings.restaurant_name || '',
   });
+  let target;
   try {
-    await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
+    target = await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
   } catch (err) {
     return sendError(res, err);
   }
+  logToInbox(order, target, text, req.staff?.name);
   const { rows } = await pool.query(
     'UPDATE orders SET eta_minutes = $1, eta_sent_at = now(), eta_sent_by = $2 WHERE id = $3 RETURNING id, eta_minutes, eta_sent_at, ready_sent_at',
     [minutes, req.staff?.name || null, order.id]
@@ -128,11 +142,13 @@ router.post('/orders/:id/ready', requireStaffAuth, asyncHandler(async (req, res)
     'رقم_الطلب': order.order_no,
     'المطعم': settings.restaurant_name || '',
   });
+  let target;
   try {
-    await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
+    target = await wa.sendToCustomer(order.customer_phone, text, order.wa_jid);
   } catch (err) {
     return sendError(res, err);
   }
+  logToInbox(order, target, text, req.staff?.name);
   const { rows } = await pool.query(
     'UPDATE orders SET ready_sent_at = now() WHERE id = $1 RETURNING id, eta_minutes, eta_sent_at, ready_sent_at',
     [order.id]

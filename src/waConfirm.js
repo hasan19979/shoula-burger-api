@@ -35,12 +35,16 @@ function parseMessage(d) {
   let jid = key.remoteJid || d.remoteJid || '';
   // بعض نسخ واتساب بتخفي الرقم (@lid) — لو في رقم حقيقي جنبه منستعمله
   if (/@lid$/.test(jid)) jid = key.senderPn || key.remoteJidAlt || d.senderPn || jid;
+  const kind = msg.imageMessage ? 'image' : msg.audioMessage || msg.pttMessage ? 'audio' : text ? 'text' : 'other';
   return {
     text: String(text),
     jid: String(jid),
     fromMe: !!key.fromMe,
     isGroup: /@g\.us$/.test(jid) || /@broadcast$/.test(jid),
     pushName: d.pushName || '',
+    kind,
+    id: key.id || null,
+    raw: d,
   };
 }
 
@@ -66,7 +70,14 @@ async function handleIncoming(payload) {
   const results = [];
   for (const d of list) {
     const m = parseMessage(d);
-    if (!m || m.fromMe || m.isGroup || !m.jid) continue;
+    if (!m || m.isGroup || !m.jid || /@broadcast$/.test(m.jid)) continue;
+    // صندوق الرسائل + المساعد (كل رسالة — من الزبون أو من تلفون المطعم نفسه)
+    try {
+      await require('./ai/assistant').onIncoming(m);
+    } catch (err) {
+      console.error('[inbox] store failed:', err.message);
+    }
+    if (m.fromMe) continue;
     const orderNo = extractOrderNo(m.text);
     if (!orderNo) continue;
     // أحدث طلب من الموقع بهاد الرقم خلال آخر يوم

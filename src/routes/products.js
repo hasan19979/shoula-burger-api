@@ -285,3 +285,4 @@ router.put('/:id/recipe', requireAnyAuth, asyncHandler(async (req, res) => {
 }));
 
 module.exports = router;
+module.exports.attachIngredients = attachIngredients;

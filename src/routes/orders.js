@@ -613,3 +613,6 @@ router.patch('/:id/status', requireAnyAuth, asyncHandler(async (req, res) => {
 }));
 
 module.exports = router;
+// للاستعمال من المساعد الذكي (طلبات من محادثة الواتساب) — نفس منطق التسعير والحفظ بالضبط
+module.exports.buildAndSaveOrder = buildAndSaveOrder;
+module.exports.priceOrderItems = priceOrderItems;
