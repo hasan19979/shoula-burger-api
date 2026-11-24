@@ -6,6 +6,7 @@
 const pool = require('../db/pool');
 const ai = require('./providers');
 const store = require('./store');
+const dataQuery = require('./dataQuery');
 
 const TZ = 'Asia/Hebron';
 const n = (v) => Math.round(Number(v || 0) * 100) / 100;
@@ -88,12 +89,22 @@ async function collect(days) {
   };
 }
 
-const SYSTEM = `إنت محلل بيانات لمطعم. بتحكي باللهجة الفلسطينية، بوضوح واختصار.
-- اعتمد بس على الأرقام يلي بالبيانات. ما تخترع أرقام. إذا البيانات ما بتكفي، احكي هيك.
-- ابدأ بملخص بجملتين، وبعدين نقاط قصيرة (**عناوين عريضة** و- نقاط). بدون جداول.
+const SYSTEM = `إنت محلل بيانات لمطعم، وعندك وصول كامل (قراءة بس) لبيانات نظام الكاشير عن طريق أداة query_data.
+بتحكي باللهجة الفلسطينية، بوضوح واختصار.
+
+طريقة الشغل:
+1. عندك ملخص جاهز للفترة المختارة — ابدأ منه.
+2. لما السؤال بدو تفاصيل مش بالملخص (موظف معيّن، يوم معيّن، صنف، خصومات، إلغاءات، مخزون، تكاليف وأرباح، ورديات...) — استعلم بـ query_data.
+   اعمل استعلامات مجمّعة (GROUP BY) ومحددة. إذا طلع خطأ، صلّح الاستعلام وجرب مرة تانية.
+3. ما تخترع ولا رقم. كل رقم بتحكيه لازم يكون من الملخص أو من استعلام. إذا البيانات ما بتكفي، احكي هيك.
+
+شكل الجواب:
+- ابدأ بملخص بجملتين، وبعدين نقاط قصيرة (**عناوين عريضة** و- نقاط). بدون جداول، وبدون SQL بالجواب.
 - قارن مع الفترة السابقة لما بيفيد (بالنسبة المئوية).
-- اختم بـ٢-٤ اقتراحات عملية ومحددة للمطعم.
-- الأرقام بالشيكل (₪).`;
+- اختم بـ٢-٤ اقتراحات عملية ومحددة.
+- الأرقام بالشيكل (₪).
+
+${dataQuery.SCHEMA_DOC}`;
 
 async function analyze({ days, question, provider, model }) {
   const cfg = await store.getConfig();
@@ -105,15 +116,21 @@ async function analyze({ days, question, provider, model }) {
     m = '';
   }
   const data = await collect(days);
-  if (!data.الإجمالي.طلبات && !data.الفترة_السابقة_للمقارنة.طلبات) {
-    return { text: 'ما في طلبات بهاي الفترة لحتى أحللها.', data };
-  }
   const q = String(question || '').trim() || 'اعطيني تحليل شامل لأداء المطعم بهاي الفترة.';
+  const queries = [];
   const out = await ai.runAgent({
-    provider: p, model: m, system: SYSTEM, kind: 'analysis', maxTokens: 1500,
-    history: [{ role: 'user', text: `البيانات (JSON):\n${JSON.stringify(data)}\n\nالسؤال: ${q.slice(0, 1000)}` }],
+    provider: p, model: m, system: SYSTEM, kind: 'analysis', maxTokens: 2500, maxSteps: 10,
+    history: [{ role: 'user', text: `ملخص آخر ${days} يوم (JSON):\n${JSON.stringify(data)}\n\nالسؤال: ${q.slice(0, 1000)}` }],
+    tools: [dataQuery.QUERY_TOOL],
+    execTool: async (name, args) => {
+      if (name !== 'query_data') return { error: 'أداة مش معروفة' };
+      if (queries.length >= 12) return { error: 'وصلت لحد الاستعلامات — اكتب الجواب هلأ من يلي عندك' };
+      const r = await dataQuery.runQuery(args.sql);
+      queries.push({ purpose: args.purpose || '', sql: String(args.sql || '').slice(0, 2000), rows: r.rowCount ?? 0, error: r.error || null });
+      return r;
+    },
   });
-  return { text: out.text || 'ما رجع جواب.', provider: p };
+  return { text: out.text || 'ما رجع جواب.', provider: p, queries };
 }
 
 module.exports = { analyze, collect };

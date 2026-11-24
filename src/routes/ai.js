@@ -7,6 +7,8 @@ const ai = require('../ai/providers');
 const store = require('../ai/store');
 const assistant = require('../ai/assistant');
 const analysis = require('../ai/analysis');
+const dailyReport = require('../ai/dailyReport');
+const describe = require('../ai/describe');
 
 /** إعدادات المساعد، دليله، تجربته، أداؤه، وتحليل البيانات — للمدير */
 const router = express.Router();
@@ -25,7 +27,7 @@ router.put('/config', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'شركة ذكاء اصطناعي مش معروفة' });
   }
   if (body.audio?.provider === 'anthropic') return res.status(400).json({ error: 'Claude ما بيحوّل الصوت لكتابة — اختاري Gemini أو OpenAI للصوت' });
-  const allowed = ['enabled', 'mode', 'schedule', 'from', 'to', 'takeOrders', 'chat', 'vision', 'audio', 'analysis', 'dailyLimit', 'handoffMessage', 'retentionDays'];
+  const allowed = ['enabled', 'mode', 'schedule', 'from', 'to', 'takeOrders', 'chat', 'vision', 'audio', 'analysis', 'dailyLimit', 'handoffMessage', 'retentionDays', 'dailyReport'];
   const patch = Object.fromEntries(Object.entries(body).filter(([k]) => allowed.includes(k)));
   if (patch.handoffMessage !== undefined) patch.handoffMessage = String(patch.handoffMessage).slice(0, 300);
   res.json({ config: await store.saveConfig(patch) });
@@ -108,6 +110,63 @@ router.post('/analyze', asyncHandler(async (req, res) => {
   } catch (err) {
     fail(res, err);
   }
+}));
+
+/* ---------- التقرير اليومي على الواتساب ---------- */
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// معاينة: الأرقام والأشياء الغريبة ونص الرسالة — بدون إرسال
+router.get('/daily-report/preview', asyncHandler(async (req, res) => {
+  const day = DAY_RE.test(String(req.query.day || '')) ? req.query.day : undefined;
+  try {
+    res.json(await dailyReport.build(day));
+  } catch (err) {
+    fail(res, err);
+  }
+}));
+
+// ابعتي هلأ (تجربة) — لأرقام الإعدادات أو لرقم معيّن
+router.post('/daily-report/send', asyncHandler(async (req, res) => {
+  const day = DAY_RE.test(String(req.body?.day || '')) ? req.body.day : undefined;
+  const cfg = await store.getConfig();
+  const phones = dailyReport.parsePhones(req.body?.phones || cfg.dailyReport.phones);
+  if (!phones.length) return res.status(400).json({ error: 'اكتبي رقم واتساب واحد على الأقل' });
+  try {
+    const report = await dailyReport.build(day);
+    const results = await dailyReport.sendTo(phones, report.text);
+    res.json({ ...report, results });
+  } catch (err) {
+    fail(res, err);
+  }
+}));
+
+router.get('/daily-report/history', asyncHandler(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT to_char(day, 'YYYY-MM-DD') AS day, sent_at, sent_to, text, error, attempts FROM daily_reports ORDER BY day DESC LIMIT 14`
+  );
+  res.json(rows);
+}));
+
+/* ---------- أوصاف الأصناف ---------- */
+router.post('/describe-products', asyncHandler(async (req, res) => {
+  const { items, ids, onlyEmpty, style, emoji } = req.body || {};
+  try {
+    const suggestions = await describe.suggest({
+      items: Array.isArray(items) ? items : undefined,
+      ids: Array.isArray(ids) ? ids : undefined,
+      onlyEmpty: !!onlyEmpty,
+      style: style === 'fusha' ? 'fusha' : 'local',
+      emoji: !!emoji,
+    });
+    res.json({ suggestions });
+  } catch (err) {
+    fail(res, err);
+  }
+}));
+
+router.post('/describe-products/apply', asyncHandler(async (req, res) => {
+  const saved = await describe.apply(req.body?.items);
+  res.json({ saved });
 }));
 
 module.exports = router;

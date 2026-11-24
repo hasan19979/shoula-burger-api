@@ -504,3 +504,117 @@ CREATE TABLE IF NOT EXISTS ai_usage (
 
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS ai_config JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS ai_created BOOLEAN NOT NULL DEFAULT false;
+
+
+-- حجز الطاولات: مين حاجز ورقمه وإمتى
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS reserved_name TEXT;
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS reserved_phone TEXT;
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS reserved_for TIMESTAMPTZ;
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS reserved_party INT;
+ALTER TABLE restaurant_tables ADD COLUMN IF NOT EXISTS reserved_note TEXT;
+
+-- جرد الصندوق: الكاش لحاله والفيزا لحالها، وطلبات من برا النظام (تطبيقات توصيل...)
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS cash_orders_total NUMERIC(10,2);
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS card_orders_total NUMERIC(10,2);
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS card_actual NUMERIC(10,2);      -- مجموع ماكينة الفيزا (اختياري)
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS card_difference NUMERIC(10,2);
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS external_orders JSONB NOT NULL DEFAULT '[]'; -- [{source, amount, count, method: cash|card|later}]
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS external_cash NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS external_card NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE cash_register_audits ADD COLUMN IF NOT EXISTS external_later NUMERIC(10,2) NOT NULL DEFAULT 0;
+
+-- تتبّع "الدفع لاحقاً" (مطفي = الطلب بينحسب كأنه انقبض كاش وقت الطلب، زي قبل)
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS track_pay_later BOOLEAN NOT NULL DEFAULT true;
+-- الدفع لاحقاً: لما الزبون يرجع يدفع (كاش أو فيزا) — المصاري بتنحسب بيوم الدفع، مش بيوم الطلب
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_by TEXT;
+CREATE INDEX IF NOT EXISTS orders_pay_later_idx ON orders(created_at) WHERE payment_method = 'pay-later';
+
+-- ===== التقرير اليومي على الواتساب =====
+CREATE TABLE IF NOT EXISTS daily_reports (
+  day DATE PRIMARY KEY,           -- يوم العمل
+  sent_at TIMESTAMPTZ,
+  sent_to TEXT,
+  text TEXT NOT NULL DEFAULT '',
+  data JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE daily_reports ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+
+-- ===== بيانات للذكاء الاصطناعي (قراءة بس) =====
+-- نسخة "نظيفة" من بيانات النظام: بدون أسماء الزبائن، تلفوناتهم، عناوينهم، ولا رموز الموظفين.
+-- المحلل بيقدر يستعلم منها بحرية (SELECT بس، داخل معاملة للقراءة فقط)، وما بيوصل للجداول الأصلية.
+DROP SCHEMA IF EXISTS ai_data CASCADE;
+CREATE SCHEMA ai_data;
+
+-- دقيقة بداية يوم العمل (نص الفترة بين السكّرة والفتحة) — نفس منطق السيرفر
+CREATE FUNCTION ai_data.cutoff_minutes() RETURNS int LANGUAGE sql STABLE AS $$
+  WITH s AS (
+    SELECT
+      COALESCE(NULLIF(split_part(open_time, ':', 1), '')::int * 60 + NULLIF(split_part(open_time, ':', 2), '')::int, 780) % 1440 AS o,
+      COALESCE(NULLIF(split_part(close_time, ':', 1), '')::int * 60 + NULLIF(split_part(close_time, ':', 2), '')::int, 0) % 1440 AS c
+    FROM public.settings WHERE id = 1
+  )
+  SELECT ((c + ((o - c + 1440) % 1440) / 2) % 1440)::int FROM s
+$$;
+CREATE FUNCTION ai_data.business_day(ts timestamptz) RETURNS date LANGUAGE sql STABLE AS $$
+  SELECT ((ts AT TIME ZONE 'Asia/Hebron') - make_interval(mins => ai_data.cutoff_minutes()))::date
+$$;
+
+CREATE VIEW ai_data.orders AS
+  SELECT id, order_no, COALESCE(order_day, ai_data.business_day(created_at)) AS business_day,
+         created_at AT TIME ZONE 'Asia/Hebron' AS local_time,
+         order_type, status, payment_method,
+         CASE WHEN ai_created THEN 'whatsapp_ai' ELSE order_source END AS source,
+         subtotal, discount, delivery_fee, total, amount_paid, coupon_code,
+         cashier_name, table_number, customer_id, points_earned, points_redeemed,
+         cancelled_by, cancelled_at AT TIME ZONE 'Asia/Hebron' AS cancelled_local_time, cancel_reason,
+         edited_by, edited_at AT TIME ZONE 'Asia/Hebron' AS edited_local_time,
+         kitchen_status, eta_minutes, awaiting_wa,
+         paid_at AT TIME ZONE 'Asia/Hebron' AS paid_local_time, paid_by,
+         ai_data.business_day(COALESCE(paid_at, created_at)) AS money_day -- يوم دخول المصاري (للدفع لاحقاً = يوم الدفع)
+    FROM public.orders;
+CREATE VIEW ai_data.order_items AS
+  SELECT oi.id, oi.order_id, oi.product_id, oi.product_name, oi.quantity, oi.unit_price, oi.line_total,
+         v.name AS variant_name,
+         oi.item_meta->'removedIngredients' AS removed_ingredients,
+         oi.item_meta->'addedIngredients' AS added_ingredients,
+         (oi.item_meta ? 'priceOverride') AS price_changed_by_cashier,
+         (oi.item_meta->>'originalUnitPrice')::numeric AS original_unit_price
+    FROM public.order_items oi
+    LEFT JOIN public.product_variants v ON v.id = NULLIF(oi.item_meta->>'variantId', '')::int;
+CREATE VIEW ai_data.products AS
+  SELECT id, category_id, name, description, price, cost, in_stock, is_featured, is_popular, sort_order,
+         created_at AT TIME ZONE 'Asia/Hebron' AS created_local_time
+    FROM public.products;
+CREATE VIEW ai_data.categories AS SELECT id, name, sort_order FROM public.categories;
+CREATE VIEW ai_data.product_variants AS SELECT id, product_id, name, price_delta, is_default, hidden_from_website FROM public.product_variants;
+CREATE VIEW ai_data.product_ingredients AS SELECT * FROM public.product_ingredients;
+CREATE VIEW ai_data.customers AS
+  SELECT id, loyalty_points, created_at AT TIME ZONE 'Asia/Hebron' AS created_local_time FROM public.customers;
+CREATE VIEW ai_data.coupons AS SELECT * FROM public.coupons;
+CREATE VIEW ai_data.staff AS SELECT id, name, role, active, hourly_rate FROM public.staff_users;
+CREATE VIEW ai_data.time_entries AS
+  SELECT t.id, t.staff_id, s.name AS staff_name, s.role,
+         t.clock_in AT TIME ZONE 'Asia/Hebron' AS clock_in_local, t.clock_out AT TIME ZONE 'Asia/Hebron' AS clock_out_local,
+         ROUND(EXTRACT(EPOCH FROM (COALESCE(t.clock_out, now()) - t.clock_in)) / 3600.0, 2) AS hours
+    FROM public.time_entries t LEFT JOIN public.staff_users s ON s.id = t.staff_id;
+CREATE VIEW ai_data.inventory_items AS SELECT * FROM public.inventory_items;
+CREATE VIEW ai_data.recipe_ingredients AS SELECT * FROM public.recipe_ingredients;
+CREATE VIEW ai_data.stock_movements AS
+  SELECT id, inventory_item_id, supplier_id, type, quantity, unit_cost, note,
+         created_at AT TIME ZONE 'Asia/Hebron' AS local_time, ai_data.business_day(created_at) AS business_day
+    FROM public.stock_movements;
+CREATE VIEW ai_data.suppliers AS SELECT id, name FROM public.suppliers;
+CREATE VIEW ai_data.cash_withdrawals AS
+  SELECT id, amount, reason, staff_name, recipient_type, recipient_name,
+         created_at AT TIME ZONE 'Asia/Hebron' AS local_time, ai_data.business_day(created_at) AS business_day
+    FROM public.cash_withdrawals;
+CREATE VIEW ai_data.cash_register_audits AS SELECT * FROM public.cash_register_audits;
+CREATE VIEW ai_data.restaurant_tables AS SELECT id, number, seats, status, enabled FROM public.restaurant_tables;
+CREATE VIEW ai_data.whatsapp_conversations AS
+  SELECT id, customer_id, ai_enabled, needs_human, created_at AT TIME ZONE 'Asia/Hebron' AS created_local_time,
+         last_message_at AT TIME ZONE 'Asia/Hebron' AS last_message_local_time
+    FROM public.wa_conversations;
+CREATE VIEW ai_data.daily_reports AS SELECT day, sent_at, text FROM public.daily_reports;

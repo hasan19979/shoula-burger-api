@@ -77,6 +77,16 @@ app.use('/api/cash-audit', cashAuditRoutes);
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/whatsapp', require('./routes/whatsapp')); // رسائل للزبائن عبر Evolution API
 app.use('/api/inbox', require('./routes/inbox')); // صندوق رسائل الواتساب
+// نبضة التقرير اليومي — لخدمة خارجية (مثلاً cron-job.org) تصحّي السيرفر بعد السكّرة. محمية بنفس سر الـ webhook
+app.get('/api/ai-tick', async (req, res) => {
+  const secret = process.env.WA_WEBHOOK_SECRET;
+  if (!secret || req.query.secret !== secret) return res.status(403).json({ error: 'forbidden' });
+  try {
+    res.json(await require('./ai/dailyReport').tick());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.use('/api/ai', require('./routes/ai')); // المساعد الذكي وتحليل البيانات
 
 // أي مسار مش موجود

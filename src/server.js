@@ -22,6 +22,7 @@ autoMigrate()
   .finally(() => {
     require('./waConfirm').startExpiryJob(); // طلبات الموقع يلي ما وصلت رسالتها بتنلغى بعد ساعة
     require('./ai/store').startCleanupJob(); // رسائل الصندوق القديمة بتنمسح (حسب الإعدادات)
+    require('./ai/dailyReport').startScheduler(); // التقرير اليومي على الواتساب بعد السكّرة
     server.listen(PORT, () => {
       console.log(`🚀 السيرفر شغال على البورت ${PORT} (مع اتصال لحظي Socket.IO)`);
     });

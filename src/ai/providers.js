@@ -289,6 +289,8 @@ async function runAgentOnce({ provider, model, system, history, tools = [], exec
         body: {
           model: m, max_tokens: maxTokens, system, messages,
           ...(tools.length ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}),
+          // آخر خطوة: لازم يكتب الجواب (بدون أدوات) — حتى ما يخلص بدون رد
+          ...(tools.length && step === maxSteps - 1 ? { tool_choice: { type: 'none' } } : {}),
         },
       });
       await recordUsage('anthropic', kind, data.usage?.input_tokens, data.usage?.output_tokens);
@@ -313,6 +315,7 @@ async function runAgentOnce({ provider, model, system, history, tools = [], exec
       const data = await openaiChat(key, {
         model: m, messages, max_completion_tokens: maxTokens,
         ...(tools.length ? { tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) } : {}),
+        ...(tools.length && step === maxSteps - 1 ? { tool_choice: 'none' } : {}),
       });
       await recordUsage('openai', kind, data.usage?.prompt_tokens, data.usage?.completion_tokens);
       const msg = data.choices?.[0]?.message || {};
@@ -342,6 +345,7 @@ async function runAgentOnce({ provider, model, system, history, tools = [], exec
         contents,
         generationConfig: { maxOutputTokens: maxTokens },
         ...(tools.length ? { tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }] } : {}),
+        ...(tools.length && step === maxSteps - 1 ? { toolConfig: { functionCallingConfig: { mode: 'NONE' } } } : {}),
     });
     await recordUsage('gemini', kind, data.usageMetadata?.promptTokenCount, data.usageMetadata?.candidatesTokenCount);
     const content = data.candidates?.[0]?.content || { role: 'model', parts: [] };

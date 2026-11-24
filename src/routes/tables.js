@@ -51,7 +51,8 @@ router.patch('/:id/enabled', requireAnyAuth, asyncHandler(async (req, res) => {
 router.patch('/:id/open', requireStaffAuth, asyncHandler(async (req, res) => {
   const { partySize } = req.body || {};
   const result = await pool.query(
-    `UPDATE restaurant_tables SET status = 'occupied', party_size = $1, opened_at = now(), cashier_name = $2
+    `UPDATE restaurant_tables SET status = 'occupied', party_size = $1, opened_at = now(), cashier_name = $2,
+       reserved_name = NULL, reserved_phone = NULL, reserved_for = NULL, reserved_party = NULL, reserved_note = NULL
      WHERE id = $3 RETURNING *`,
     [partySize || null, req.staff?.name || '', req.params.id]
   );
@@ -68,11 +69,30 @@ router.patch('/:id/status', requireStaffAuth, asyncHandler(async (req, res) => {
   const clearSession = status === 'available' || status === 'needs-cleaning';
   const result = await pool.query(
     `UPDATE restaurant_tables SET status = $1
-      ${clearSession ? ', party_size = NULL, opened_at = NULL, cashier_name = NULL' : ''}
+      ${clearSession ? ', party_size = NULL, opened_at = NULL, cashier_name = NULL, reserved_name = NULL, reserved_phone = NULL, reserved_for = NULL, reserved_party = NULL, reserved_note = NULL' : ''}
      WHERE id = $2 RETURNING *`,
     [status, req.params.id]
   );
   if (!result.rows.length) return res.status(404).json({ error: 'الطاولة مش موجودة' });
+  res.json(result.rows[0]);
+}));
+
+// PATCH /api/tables/:id/reserve — محمي: حجز طاولة باسم ورقم تلفون ووقت
+router.patch('/:id/reserve', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { name, phone, time, partySize, note } = req.body || {};
+  const cleanPhone = String(phone || '').replace(/[^\d+]/g, '');
+  if (cleanPhone.length < 7) return res.status(400).json({ error: 'اكتبي رقم تلفون الزبون' });
+  const when = time ? new Date(time) : null;
+  if (time && isNaN(when)) return res.status(400).json({ error: 'وقت الحجز مش مفهوم' });
+  const { rows: cur } = await pool.query('SELECT status FROM restaurant_tables WHERE id = $1', [req.params.id]);
+  if (!cur.length) return res.status(404).json({ error: 'الطاولة مش موجودة' });
+  if (cur[0].status === 'occupied') return res.status(409).json({ error: 'الطاولة مشغولة هلأ — ما بينفع تنحجز' });
+  const result = await pool.query(
+    `UPDATE restaurant_tables SET status = 'reserved', reserved_name = $1, reserved_phone = $2, reserved_for = $3,
+       reserved_party = $4, reserved_note = $5
+     WHERE id = $6 RETURNING *`,
+    [String(name || '').trim() || null, cleanPhone, when, Number(partySize) || null, String(note || '').trim() || null, req.params.id]
+  );
   res.json(result.rows[0]);
 }));
 

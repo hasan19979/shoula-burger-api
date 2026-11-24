@@ -437,9 +437,11 @@ router.patch('/:id/kitchen-status', requireStaffAuth, asyncHandler(async (req, r
 
 // GET /api/orders — محمي (لوحة التحكم). فلاتر: ?status=&type=&search=&from=&to=
 router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
-  const { status, type, search, from, to } = req.query;
+  const { status, type, search, from, to, unpaid } = req.query;
   const conditions = [];
   const params = [];
+  // ?unpaid=1 — كل طلبات "دفع لاحقاً" يلي لسا ما انقبضت (من أي يوم)
+  if (unpaid) conditions.push(`payment_method = 'pay-later' AND status <> 'cancelled'`);
 
   if (status) { params.push(status); conditions.push(`status = $${params.length}`); }
   if (type) { params.push(type); conditions.push(`order_type = $${params.length}`); }
@@ -480,8 +482,33 @@ router.get('/', requireAnyAuth, asyncHandler(async (req, res) => {
 
 // PUT /api/orders/:id/items — تعديل طلب جاهز/مطبوع (أي كاشير). الطلب بيضل بنفس الرقم.
 // بيعيد تسعير الأصناف من قاعدة البيانات، بيرجّع المخزون القديم ويخصم الجديد، وبيعدّل نقاط الزبون بالفرق
+// POST /api/orders/:id/settle — الزبون رجع ودفع طلب "دفع لاحقاً" (كاش أو فيزا)
+// المصاري بتنحسب بجرد يوم الدفع (paid_at)، مش يوم الطلب
+router.post('/:id/settle', requireStaffAuth, asyncHandler(async (req, res) => {
+  const { method, amountPaid } = req.body || {};
+  if (!['cash', 'card'].includes(method)) return res.status(400).json({ error: 'اختاري كاش أو فيزا' });
+  const { rows } = await pool.query(
+    `UPDATE orders SET payment_method = $1, paid_at = now(), paid_by = $2,
+        amount_paid = CASE WHEN $1 = 'cash' AND $3::numeric IS NOT NULL THEN $3::numeric ELSE total END
+      WHERE id = $4 AND payment_method = 'pay-later' AND status <> 'cancelled'
+      RETURNING *`,
+    [method, req.staff?.name || null, amountPaid === undefined || amountPaid === null || amountPaid === '' ? null : Number(amountPaid), req.params.id]
+  );
+  if (!rows.length) {
+    const { rows: cur } = await pool.query('SELECT payment_method, status FROM orders WHERE id = $1', [req.params.id]);
+    if (!cur.length) return res.status(404).json({ error: 'الطلب مش موجود' });
+    if (cur[0].status === 'cancelled') return res.status(409).json({ error: 'الطلب ملغي' });
+    return res.status(409).json({ error: 'الطلب مدفوع أصلاً' });
+  }
+  broadcast('orders-changed', { id: rows[0].id });
+  res.json(rows[0]);
+}));
+
 router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
-  const { items, notes } = req.body || {};
+  const { items, notes, orderType, tableNumber, customerName, customerPhone, address } = req.body || {};
+  if (orderType !== undefined && !['dine-in', 'takeaway', 'delivery', 'pos'].includes(orderType)) {
+    return res.status(400).json({ error: 'نوع الطلب مش معروف' });
+  }
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'الطلب لازم يضل فيه صنف واحد على الأقل' });
 
   const client = await pool.connect();
@@ -534,6 +561,20 @@ router.put('/:id/items', requireStaffAuth, asyncHandler(async (req, res) => {
        WHERE id = $8 RETURNING *`,
       [subtotal, discount, total, typeof notes === 'string' ? notes : null, pointsEarned, pointsBalance, editedBy, order.id]
     );
+    // نوع الطلب والطاولة وبيانات الزبون — لو انبعتت (مثلاً طاولة تحوّلت لسفري)، منحفظها حتى الفاتورة الجديدة تطلع صح
+    if (orderType !== undefined) {
+      const type = orderType;
+      const table = type === 'dine-in' ? String(tableNumber || '').trim() || null : null;
+      const name = customerName !== undefined ? String(customerName || '').trim() || 'زبون الكاشير' : order.customer_name;
+      const phone = customerPhone !== undefined ? String(customerPhone || '').trim() || '-' : order.customer_phone;
+      const addr = type === 'delivery' ? (address !== undefined ? String(address || '').trim() : order.address) : '';
+      const { rows: r2 } = await client.query(
+        `UPDATE orders SET order_type = $1, table_number = $2, customer_name = $3, customer_phone = $4, address = $5
+         WHERE id = $6 RETURNING *`,
+        [type, table, name, phone, addr || '', order.id]
+      );
+      updatedRows[0] = r2[0];
+    }
     await client.query('COMMIT');
 
     const itemsRes = await pool.query(

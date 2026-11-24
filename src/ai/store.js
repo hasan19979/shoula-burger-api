@@ -19,6 +19,8 @@ const DEFAULT_CONFIG = {
   dailyLimit: 300,
   handoffMessage: 'لحظة من فضلك، رح يرد عليك حدا من المطعم 🙏',
   retentionDays: 30,
+  // التقرير اليومي على الواتساب — بعد سكّرة المطعم
+  dailyReport: { enabled: false, phones: '', delayMinutes: 30, useAi: true, waitForAudit: true, maxWaitMinutes: 180 },
 };
 
 const DEFAULT_GUIDE = {
@@ -34,16 +36,26 @@ const DEFAULT_GUIDE = {
 async function getConfig() {
   const { rows } = await pool.query('SELECT ai_config FROM settings WHERE id = 1');
   const c = rows[0]?.ai_config || {};
-  return { ...DEFAULT_CONFIG, ...c, chat: { ...DEFAULT_CONFIG.chat, ...(c.chat || {}) }, vision: { ...DEFAULT_CONFIG.vision, ...(c.vision || {}) }, audio: { ...DEFAULT_CONFIG.audio, ...(c.audio || {}) }, analysis: { ...DEFAULT_CONFIG.analysis, ...(c.analysis || {}) } };
+  return { ...DEFAULT_CONFIG, ...c, chat: { ...DEFAULT_CONFIG.chat, ...(c.chat || {}) }, vision: { ...DEFAULT_CONFIG.vision, ...(c.vision || {}) }, audio: { ...DEFAULT_CONFIG.audio, ...(c.audio || {}) }, analysis: { ...DEFAULT_CONFIG.analysis, ...(c.analysis || {}) }, dailyReport: { ...DEFAULT_CONFIG.dailyReport, ...(c.dailyReport || {}) } };
 }
 
 async function saveConfig(patch) {
   const current = await getConfig();
   const next = { ...current, ...patch };
-  for (const k of ['chat', 'vision', 'audio', 'analysis']) if (patch[k]) next[k] = { ...current[k], ...patch[k] };
+  for (const k of ['chat', 'vision', 'audio', 'analysis', 'dailyReport']) if (patch[k]) next[k] = { ...current[k], ...patch[k] };
   next.dailyLimit = Math.max(0, Math.min(100000, Number(next.dailyLimit) || 0));
   next.retentionDays = Math.max(7, Math.min(365, Number(next.retentionDays) || 30));
   if (!['suggest', 'auto'].includes(next.mode)) next.mode = 'suggest';
+  const dr = next.dailyReport;
+  next.dailyReport = {
+    enabled: !!dr.enabled,
+    phones: String(dr.phones || '').slice(0, 300),
+    delayMinutes: Math.max(0, Math.min(600, Number(dr.delayMinutes) || 0)),
+    useAi: dr.useAi !== false,
+    // يستنى جرد الصندوق قبل ما يبعت (لحد maxWaitMinutes بعد الموعد) — حتى يطلع الصندوق بالتقرير
+    waitForAudit: dr.waitForAudit !== false,
+    maxWaitMinutes: Math.max(0, Math.min(720, Number(dr.maxWaitMinutes ?? 180) || 0)),
+  };
   if (!['always', 'outside', 'custom'].includes(next.schedule)) next.schedule = 'always';
   await pool.query('UPDATE settings SET ai_config = $1 WHERE id = 1', [JSON.stringify(next)]);
   return next;
